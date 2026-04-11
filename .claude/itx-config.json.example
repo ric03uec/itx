@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "ITX Skills Configuration - Optional overrides for project-specific settings",
+  "build": {
+    "test_command": "make test",
+    "lint_command": "make lint",
+    "coverage_command": "make test-cov"
+  },
+  "github": {
+    "project_board": {
+      "enabled": false,
+      "project_id": null,
+      "status_field_id": null,
+      "status_options": {
+        "backlog": null,
+        "ready": null,
+        "executing": null,
+        "in_review": null,
+        "done": null
+      }
+    }
+  },
+  "mcp": {
+    "review_enabled": false,
+    "review_tool": "mcp__atx__request_review"
+  },
+  "project": {
+    "name": null,
+    "version_label": "Version"
+  }
+}

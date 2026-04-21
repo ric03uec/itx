@@ -1,4 +1,4 @@
-# ITX - Issue To eXecution
+# ITX
 
 Agent-first workflow for GitHub projects. Complete issue-to-PR pipeline.
 

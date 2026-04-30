@@ -27,22 +27,36 @@ Create Issue → Triage → Plan → Execute → Verify → Review → Merge
 
 ### Installation
 
-1. Clone this repository to access the skills:
+1. Clone this repository:
    ```bash
    git clone https://github.com/ric03uec/itx.git
-   cd itx
    ```
 
-2. Copy skills to your project:
+2. Copy required files to your project root:
    ```bash
    # From your project directory
-   cp -r /path/to/itx/.claude/skills .claude/
+   cp /path/to/itx/AGENTS.md .
+   cp /path/to/itx/CLAUDE.md .
    ```
 
-3. Start using skills immediately:
+3. Copy skills for your CLI:
    ```bash
+   # For Claude Code users
+   cp -r /path/to/itx/.claude/skills .claude/
+
+   # For OpenCode users
+   cp -r /path/to/itx/.opencode/skills .opencode/
+   ```
+
+4. Start using skills:
+   ```bash
+   # Claude Code
    claude code
-   # In Claude: /itx:triage
+   # Then: /itx:triage
+
+   # OpenCode
+   opencode
+   # Then: /itx:triage
    ```
 
 ### Your First Workflow
@@ -235,8 +249,11 @@ ITX uses Claude's task tracking:
 ## Project Structure
 
 ```
+AGENTS.md             # Central reference for all skills
+CLAUDE.md             # Entry point (references AGENTS.md)
+
 .claude/
-├── skills/           # 12 ITX skills
+├── skills/           # 12 ITX skills (for Claude Code)
 │   ├── itx-bug-new/
 │   ├── itx-execute/
 │   ├── itx-plan-create/
@@ -244,10 +261,14 @@ ITX uses Claude's task tracking:
 ├── itx-config.json.example  # Configuration template
 └── CONFIG.md         # Configuration documentation
 
+.opencode/
+└── skills/           # 12 ITX skills (for OpenCode)
+
 .itx/                 # Generated plans and execution files (auto-created)
 └── <N>/              # Issue number
     ├── 00_PLAN.md    # High-level plan
-    └── 01_EXECUTION.md  # Phased execution plan
+    ├── 01_EXECUTION.md  # Phased execution plan
+    └── 02_VERIFY.md  # Verification results
 
 docs/
 └── ITX_WORKFLOW.md   # Workflow guide

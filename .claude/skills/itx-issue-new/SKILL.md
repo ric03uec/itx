@@ -86,3 +86,14 @@ Create a GitHub issue for a feature request or improvement.
 - Do not add labels by default (let triage decide)
 - Focus on the problem/need, not just the solution
 - Include acceptance criteria when possible
+
+## Prompt Logging
+
+**REQUIRED**: After creating the issue, append prompt log to `.itx/<N>/00_PLAN.md`.
+
+See [AGENTS.md](../../../AGENTS.md#prompt-logging-standard) for format specification.
+
+```bash
+mkdir -p .itx/<issue-number>
+# Append prompt log to .itx/<issue-number>/00_PLAN.md
+```

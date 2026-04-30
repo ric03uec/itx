@@ -59,7 +59,7 @@ Creates implementation plan with:
 - Context analysis (codebase exploration)
 - Technical approach
 - Key considerations
-- Plan saved to `.plan/issue-<N>/PLAN.md`
+- Plan saved to `.itx/<N>/00_PLAN.md`
 
 **Phased Execution Plan**:
 ```
@@ -70,7 +70,7 @@ Breaks plan into phases:
 - Phase dependencies
 - File changes per phase
 - Verification steps
-- Plan saved to `.plan/issue-<N>/EXECUTION.md`
+- Plan saved to `.itx/<N>/01_EXECUTION.md`
 
 **When to use**: Before starting implementation on any non-trivial issue.
 

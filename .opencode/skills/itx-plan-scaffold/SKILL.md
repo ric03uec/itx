@@ -16,7 +16,7 @@ Create a phased execution plan from a plan-create output, defining entry/exit cr
    gh issue view <number> --json number,title,body,labels,comments
    ```
 
-2. **Read Plan**: Find the plan-create comment from issue comments or read from `.plan/issue-<number>/PLAN.md`
+2. **Read Plan**: Find the plan-create comment from issue comments or read from `.itx/<number>/00_PLAN.md`
 
 3. **Analyze Complexity**:
    - **Simple** (< 3 files, single concern): Single-phase execution
@@ -48,7 +48,7 @@ Create a phased execution plan from a plan-create output, defining entry/exit cr
 
 6. **Save Scaffolding to File**:
    ```bash
-   # Write scaffolding to .plan/issue-<number>/EXECUTION.md
+   # Write scaffolding to .itx/<number>/01_EXECUTION.md
    ```
 
 7. **Post Scaffolding**: Add as comment on issue
@@ -135,4 +135,10 @@ Create a phased execution plan from a plan-create output, defining entry/exit cr
 - Exit criteria of phase N = entry criteria of phase N+1
 - Use entry/exit criteria to enable parallel execution of independent phases
 - Prefer more smaller phases over fewer larger ones
-- Execution plan saved to `.plan/issue-<N>/EXECUTION.md` for reference
+- Execution plan saved to `.itx/<N>/01_EXECUTION.md` for reference
+
+## Prompt Logging
+
+**REQUIRED**: Append prompt log to `.itx/<N>/01_EXECUTION.md`.
+
+See [AGENTS.md](../../../AGENTS.md#prompt-logging-standard) for format specification.

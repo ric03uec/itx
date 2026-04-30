@@ -109,3 +109,14 @@ Create a GitHub issue for a bug based on the current conversation context.
 - Include as much context as available from the conversation
 - If steps to reproduce are unclear, note that in the issue
 - Project name dynamically detected or loaded from config
+
+## Prompt Logging
+
+**REQUIRED**: After creating the issue, append prompt log to `.itx/<N>/00_PLAN.md`.
+
+See [AGENTS.md](../../../AGENTS.md#prompt-logging-standard) for format specification.
+
+```bash
+mkdir -p .itx/<issue-number>
+# Append prompt log to .itx/<issue-number>/00_PLAN.md
+```

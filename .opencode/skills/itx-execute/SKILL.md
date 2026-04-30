@@ -190,7 +190,7 @@ Always:
    Use the conditional project board commands above.
    If not enabled, skip this step silently.
 
-3. **Read Plan**: Find the implementation plan in issue comments or `.plan/issue-<N>/EXECUTION.md`
+3. **Read Plan**: Find the implementation plan in issue comments or `.itx/<N>/01_EXECUTION.md`
 
 4. **Load Build Configuration**:
    ```bash
@@ -390,3 +390,9 @@ See [CONFIG.md](../../CONFIG.md) for full configuration options.
 - Parent orchestration can use any model
 - Always verify before marking complete
 - Don't skip the verification step
+
+## Prompt Logging
+
+**REQUIRED**: Append prompt log to `.itx/<N>/01_EXECUTION.md`.
+
+See [AGENTS.md](../../../AGENTS.md#prompt-logging-standard) for format specification.

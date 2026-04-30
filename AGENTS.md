@@ -40,14 +40,14 @@ These skills implement a structured workflow: Create Issue → Triage → Plan �
 - `/itx:plan-create <N>` - Create high-level implementation plan
   - Explores codebase for context
   - Identifies affected files
-  - Saves to `.plan/issue-<N>/PLAN.md`
+  - Saves to `.itx/<N>/00_PLAN.md`
   - Creates subtasks if needed
   - Updates issue labels: planning → planned
 
 - `/itx:plan-scaffold <N>` - Break plan into executable phases
   - Reads plan-create output
   - Defines phases with entry/exit criteria
-  - Saves to `.plan/issue-<N>/EXECUTION.md`
+  - Saves to `.itx/<N>/01_EXECUTION.md`
   - Creates subtask issues for complex work
   - Updates issue labels: planned → ready
 
@@ -212,6 +212,85 @@ See `.claude/CONFIG.md` for complete configuration reference.
 ```
 /excalidraw-diagram       # Create architecture diagram
 # Renders to PNG for validation
+```
+
+## Prompt Logging Standard
+
+ALL itx skills MUST capture user intent by appending prompt log entries to local files.
+
+### File Structure
+
+```
+.itx/
+  <N>/
+    00_PLAN.md        # Planning phase
+    01_EXECUTION.md   # Execution phase
+    02_VERIFY.md      # Verification phase
+```
+
+### Prompt Log Location by Skill
+
+| Skill | Phase | Prompt Log Location |
+|-------|-------|---------------------|
+| `itx:issue-new` | Planning | `.itx/<N>/00_PLAN.md` |
+| `itx:bug-new` | Planning | `.itx/<N>/00_PLAN.md` |
+| `itx:issue-update` | Planning | `.itx/<N>/00_PLAN.md` |
+| `itx:bug-update` | Planning | `.itx/<N>/00_PLAN.md` |
+| `itx:triage` | Planning | `.itx/<N>/00_PLAN.md` |
+| `itx:plan-create` | Planning | `.itx/<N>/00_PLAN.md` |
+| `itx:plan-scaffold` | Execution | `.itx/<N>/01_EXECUTION.md` |
+| `itx:execute` | Execution | `.itx/<N>/01_EXECUTION.md` |
+| `itx:verify` | Verify | `.itx/<N>/02_VERIFY.md` |
+| `itx:pr-status` | Verify | `.itx/<N>/02_VERIFY.md` |
+| `itx:review-pr` | Verify | `.itx/<N>/02_VERIFY.md` |
+| `itx:note` | Planning | `NOTES.md` |
+
+### Format
+
+Append to end of the appropriate file:
+
+```yaml
+---
+# PROMPT_LOG (append new entries, do not overwrite)
+prompt_log:
+  - timestamp: "<ISO8601>"
+    model: "<model-id>"
+    skill: "<skill-name>"
+    input: |
+      <verbatim user input>
+---
+```
+
+### Rules
+
+1. **Append only** - Do not overwrite existing entries
+2. **Existing section** - If `prompt_log` section exists, append to the YAML array
+3. **Verbatim capture** - Record exact user input including arguments
+4. **ISO8601 timestamp** - Use format `2026-04-30T12:00:00Z`
+5. **Model ID** - Record the model used (e.g., `claude-opus-4-5-20251101`)
+
+### Example: Multiple Rounds
+
+```yaml
+---
+# PROMPT_LOG
+prompt_log:
+  - timestamp: "2026-04-30T12:00:00Z"
+    model: "claude-opus-4-5-20251101"
+    skill: "itx:plan-create"
+    input: |
+      /itx:plan-create 42
+  - timestamp: "2026-04-30T14:30:00Z"
+    model: "claude-opus-4-5-20251101"
+    skill: "itx:plan-create"
+    input: |
+      update the plan to add error handling for edge cases
+  - timestamp: "2026-04-30T16:00:00Z"
+    model: "claude-sonnet-4-20250514"
+    skill: "itx:issue-update"
+    input: |
+      /itx:issue-update 42 added caching layer to the design
+---
 ```
 
 ## Best Practices

@@ -244,10 +244,10 @@ ITX uses Claude's task tracking:
 ├── itx-config.json.example  # Configuration template
 └── CONFIG.md         # Configuration documentation
 
-.plan/                # Generated plans (auto-created)
-└── issue-N/
-    ├── PLAN.md       # High-level plan
-    └── EXECUTION.md  # Phased execution plan
+.itx/                 # Generated plans and execution files (auto-created)
+└── <N>/              # Issue number
+    ├── 00_PLAN.md    # High-level plan
+    └── 01_EXECUTION.md  # Phased execution plan
 
 docs/
 └── ITX_WORKFLOW.md   # Workflow guide

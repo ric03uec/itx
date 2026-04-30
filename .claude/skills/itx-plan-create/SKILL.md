@@ -30,8 +30,8 @@ Create a high-level implementation plan for a GitHub issue with product output a
 
 4. **Save Plan to File**:
    ```bash
-   mkdir -p .plan/issue-<number>
-   # Write plan to .plan/issue-<number>/PLAN.md
+   mkdir -p .itx/<number>
+   # Write plan to .itx/<number>/00_PLAN.md
    ```
 
 5. **Decide on Subtasks**:
@@ -123,4 +123,10 @@ Create a high-level implementation plan for a GitHub issue with product output a
 - Use expensive models (Opus/Sonnet) for planning - this is where thinking matters
 - Execution can use cheaper models (Haiku)
 - Plans should be detailed enough that any developer can execute
-- Plan file saved to `.plan/issue-<N>/PLAN.md` for reference
+- Plan file saved to `.itx/<N>/00_PLAN.md` for reference
+
+## Prompt Logging
+
+**REQUIRED**: Append prompt log to `.itx/<N>/00_PLAN.md`.
+
+See [AGENTS.md](../../../AGENTS.md#prompt-logging-standard) for format specification.

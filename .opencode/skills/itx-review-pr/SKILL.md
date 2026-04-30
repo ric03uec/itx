@@ -232,3 +232,9 @@ See [CONFIG.md](../../CONFIG.md) for full configuration options.
 - Address all blocking issues before merge
 - Use suggestions to improve code quality
 - Update PR description with review findings
+
+## Prompt Logging
+
+**REQUIRED**: Append prompt log to `.itx/<N>/02_VERIFY.md`.
+
+See [AGENTS.md](../../../AGENTS.md#prompt-logging-standard) for format specification.

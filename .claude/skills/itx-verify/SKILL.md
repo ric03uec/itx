@@ -91,7 +91,13 @@ Customize build commands in `.claude/itx-config.json`:
 
 ## Notes
 
-- This is a local operation - no prompt logging to GitHub
+- This is a local operation
 - Must pass before creating PRs
 - Use this after making changes, before committing
 - Can be run multiple times during development
+
+## Prompt Logging
+
+**REQUIRED**: Append prompt log to `.itx/<N>/02_VERIFY.md`.
+
+See [AGENTS.md](../../../AGENTS.md#prompt-logging-standard) for format specification.

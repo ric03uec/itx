@@ -81,6 +81,12 @@ These skills implement a structured workflow: Create Issue → Triage → Plan �
   - Posts review summary as comment
   - Optional: Updates project board to "in review"
 
+- `/itx:cleanup <N>` - Remove tmux window, worktree, and branch for issue N
+  - Required: issue number (errors if omitted)
+  - Safe by default; refuses dirty worktree or unmerged branch
+  - Pass `--force` to override safety checks
+  - Does NOT touch remote branches, planning artifacts, or the issue itself
+
 ## Configuration
 
 All skills work with **zero configuration**. Optionally customize via `.claude/itx-config.json`:
@@ -187,6 +193,7 @@ See `.claude/CONFIG.md` for complete configuration reference.
 /itx:execute 42           # Implement fix
 /itx:verify               # Run tests
 /itx:review-pr            # Request review
+/itx:cleanup 42           # After merge: tear down worktree/branch/tmux
 ```
 
 ### Feature Development
@@ -243,6 +250,7 @@ ALL itx skills MUST capture user intent by appending prompt log entries to local
 | `itx:verify` | Verify | `.itx/<N>/02_VERIFY.md` |
 | `itx:pr-status` | Verify | `.itx/<N>/02_VERIFY.md` |
 | `itx:review-pr` | Verify | `.itx/<N>/02_VERIFY.md` |
+| `itx:cleanup` | Verify | `.itx/<N>/02_VERIFY.md` |
 | `itx:note` | Planning | `NOTES.md` |
 
 ### Format

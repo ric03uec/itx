@@ -34,11 +34,20 @@ Create a high-level implementation plan for a GitHub issue with product output a
    # Write plan to .itx/<number>/00_PLAN.md
    ```
 
-5. **Decide on Subtasks**:
+5. **Commit Plan File**:
+   Always commit the plan artifact so it doesn't linger in the working tree.
+   Stage **only** the `.itx` file — never use `git add -A` or `git add .`.
+   ```bash
+   git add ".itx/<number>/00_PLAN.md"
+   git diff --cached --quiet || git commit -m "itx: plan for #<number>"
+   ```
+   The `git diff --cached --quiet` check skips the commit silently if the file was already committed by a prior run.
+
+6. **Decide on Subtasks**:
    - **Simple issue** (< 3 files, single concern): No subtasks needed
    - **Complex issue** (multiple files, multiple concerns): Create subtasks
 
-6. **If Subtasks Needed**: Detect repository info and create subtask issues with sub-issue links
+7. **If Subtasks Needed**: Detect repository info and create subtask issues with sub-issue links
     ```bash
     # Extract repository info
     REMOTE_URL=$(git config --get remote.origin.url)
@@ -65,7 +74,7 @@ Create a high-level implementation plan for a GitHub issue with product output a
       -f childId=$(gh api graphql -f query='query($owner: String!, $repo: String!, $issue: Int!) { repository(owner: $owner, name: $repo) { issue(number: $issue) { id } } }' -f owner="$OWNER" -f repo="$REPO" -F issue=$CHILD_NUM | jq -r '.data.repository.issue.id')
     ```
 
-7. **Post Plan**: Add plan as comment on parent issue
+8. **Post Plan**: Add plan as comment on parent issue
    ```markdown
    ## Implementation Plan
 
@@ -104,12 +113,12 @@ Create a high-level implementation plan for a GitHub issue with product output a
    </details>
    ```
 
-8. **Update Labels**:
+9. **Update Labels**:
    ```bash
    gh issue edit <number> --remove-label "planning" --add-label "planned"
    ```
 
-9. **Return**: Plan summary and any subtask issue numbers
+10. **Return**: Plan summary and any subtask issue numbers
 
 ## Subtask Guidelines
 

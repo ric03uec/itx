@@ -51,7 +51,16 @@ Create a phased execution plan from a plan-create output, defining entry/exit cr
    # Write scaffolding to .itx/<number>/01_EXECUTION.md
    ```
 
-7. **Post Scaffolding**: Add as comment on issue
+7. **Commit Scaffolding File**:
+   Always commit the scaffold artifact so it doesn't linger in the working tree.
+   Stage **only** the `.itx` file — never use `git add -A` or `git add .`.
+   ```bash
+   git add ".itx/<number>/01_EXECUTION.md"
+   git diff --cached --quiet || git commit -m "itx: scaffold for #<number>"
+   ```
+   The `git diff --cached --quiet` check skips the commit silently if the file was already committed by a prior run.
+
+8. **Post Scaffolding**: Add as comment on issue
    ```markdown
    ## Execution Scaffolding
 
@@ -76,7 +85,7 @@ Create a phased execution plan from a plan-create output, defining entry/exit cr
    </details>
    ```
 
-8. **Create Subtasks (if multi-phase)** and link as sub-issues:
+9. **Create Subtasks (if multi-phase)** and link as sub-issues:
     ```bash
     # Extract repository info
     REMOTE_URL=$(git config --get remote.origin.url)
@@ -103,10 +112,10 @@ Create a phased execution plan from a plan-create output, defining entry/exit cr
       -f childId=$(gh api graphql -f query='query($owner: String!, $repo: String!, $issue: Int!) { repository(owner: $owner, name: $repo) { issue(number: $issue) { id } } }' -f owner="$OWNER" -f repo="$REPO" -F issue=$CHILD_NUM | jq -r '.data.repository.issue.id')
     ```
 
-9. **Update Labels**:
-   ```bash
-   gh issue edit <number> --remove-label "planned" --add-label "ready"
-   ```
+10. **Update Labels**:
+    ```bash
+    gh issue edit <number> --remove-label "planned" --add-label "ready"
+    ```
 
 ## Phase Guidelines
 

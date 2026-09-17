@@ -20,7 +20,7 @@ names use these terms exactly.
 | Term | Definition |
 |---|---|
 | **Kernel** | The system core: orchestrator loop, state store, file locking, project management, task management, config management. Sole reader/writer of manifest, work index, and config. Decides *what* runs *when* (dependency graph, reconciliation, terminal states). |
-| **Executor** | Materializes a task the kernel scheduled: prepares isolation (git worktree + branch), builds the launch command via the harness adapter, and asks tman for a terminal window to run it in. |
+| **Executor** | Kernel subcomponent that decides which node in the dependency tree runs next: owns the work queue, then materializes each scheduled task — prepares isolation (git worktree + branch), builds the launch command via the harness adapter, and runs it through the tman interface. |
 | **Terminal Manager (tman)** | Abstraction over terminal multiplexers/emulators. Small interface: create terminal session, add terminal window, send command, check liveness, kill. v1 backend: tmux. Future backends: wezterm, terminator, native OS terminals. |
 | **Harness Adapter** | Builds the interactive agent-harness launch command (claude, opencode, pi) from a command template + generated task prompt. Selection precedence: task override → session → `--harness` flag → config `default_harness` → PATH auto-detect. |
 | **LLM Adapter** | Direct (non-interactive) LLM calls the system needs (e.g. slug generation, summaries, failure triage). Defaults to the caller's harness provider/credentials; overridable in config. |

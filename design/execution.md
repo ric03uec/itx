@@ -57,8 +57,9 @@ Move the old product out of the way; scaffold the new one.
   `itx/{session-slug}/{task-slug}`); non-git fallback = shared dir + warning.
 - `internal/harness`: adapter interface; claude/opencode/pi templates from config;
   PATH auto-detect (claude → opencode → pi); `--harness`/`--model` overrides.
-- `internal/executor`: task materialization — isolation, prompt generation (title +
-  DoD + status-update contract), harness command assembly, window request via tman.
+- `internal/kernel/executor`: work queue (next node in dep tree) + task
+  materialization — isolation, prompt generation (title + DoD + status-update
+  contract), harness command assembly, window request via tman.
 - `internal/llm`: LLM adapter interface; caller-provider default, config override.
   (v1 wiring only; no scheduling logic may call it.)
 - `internal/kernel`: kernel loop per arch.md workflow 3 — spawn unblocked via
@@ -82,7 +83,7 @@ Move the old product out of the way; scaffold the new one.
   dead-window reconcile path runs in CI. `make test` green.
 - FR3 requirements demonstrably met; kernel loop restart recovers from manifest.json
   alone.
-- Kernel and executor have zero direct tmux calls (everything through tman) —
+- Kernel (including its executor) has zero direct tmux calls (everything through tman) —
   enforced by review/grep in CI.
 
 ## Step 4 — Skill + embed

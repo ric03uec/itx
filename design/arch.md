@@ -16,16 +16,15 @@ flowchart TB
     end
 
     subgraph kernel["KERNEL (system core)"]
-        LOOP[orchestrator loop<br/>dep graph · scheduling · reconciliation]
+        LOOP[orchestrator loop<br/>poll · reconcile · session state]
+        subgraph executor["executor"]
+            QUEUE[work queue<br/>picks next node in dep tree]
+            LAUNCH[task launch<br/>worktree · prompt · command assembly]
+        end
         PM[project mgmt]
         TM2[task mgmt]
         CM[config mgmt]
         ST[state store + locking]
-    end
-
-    subgraph executor["EXECUTOR"]
-        ISO[isolation<br/>worktree + branch]
-        LAUNCH[task launch<br/>prompt + command assembly]
     end
 
     subgraph adapters["Adapters"]
@@ -54,11 +53,11 @@ flowchart TB
     U -->|slash command| SK --> CLI
     U -->|direct| CLI
     CLI --> kernel
-    kernel --> ST --> CFG & WORK & MAN
-    LOOP -->|schedule task| executor
-    executor --> HAR
+    ST --> CFG & WORK & MAN
+    LOOP -->|unblocked tasks| QUEUE --> LAUNCH
+    LAUNCH -->|build launch command| HAR
     kernel -.->|non-interactive calls| LLM
-    executor -->|run command in new window| TIF
+    LAUNCH -->|run command in new window| TIF
     TIF --> TMUX
     TMUX --> term
     W1 & W2 -->|itx task update| CLI
@@ -66,11 +65,13 @@ flowchart TB
 
 Component boundaries:
 
-- **Kernel** — the system core. Orchestrator loop + state store + locking + project /
-  task / config management collapse into this one component. Sole writer of state
-  files. Deterministic; no terminal or harness knowledge.
-- **Executor** — materializes one scheduled task: worktree, prompt, harness command,
-  window request. Stateless between calls.
+- **Kernel** — the system core. Orchestrator loop + executor + state store + locking
+  + project / task / config management collapse into this one component. Sole writer
+  of state files. Deterministic. The kernel touches terminals only through the tman
+  interface and harnesses only through the harness adapter.
+- **Executor (kernel subcomponent)** — decides which node in the dependency tree runs
+  next: owns the work queue, then materializes each scheduled task (worktree, prompt,
+  harness command via the harness adapter) and runs it through the tman interface.
 - **tman (terminal manager)** — narrow interface (`CreateSession`, `AddWindow`,
   `SendCommand`, `IsAlive`, `Kill`); tmux is the only v1 backend; wezterm/terminator/
   native terminals slot in behind the same interface later.
@@ -125,7 +126,7 @@ sequenceDiagram
     participant EXE as itx session execute
     participant T as tman
     participant K as kernel loop (window 0)
-    participant X as executor
+    participant X as executor (kernel)
     participant W as task windows (harness)
     participant M as manifest.json
 
@@ -300,7 +301,8 @@ cmd/itx/main.go
 internal/cli/        # cobra command wiring only
 internal/kernel/     # THE core: orchestrator loop, state store, locking,
                      # project mgmt, task mgmt, config mgmt, dep graph, reconciler
-internal/executor/   # task materialization: isolation (worktree), prompt, launch
+internal/kernel/executor/  # work queue: picks next node in dep tree; task
+                           # materialization (worktree, prompt, launch via tman)
 internal/tman/       # TerminalManager interface + tmux backend
 internal/harness/    # harness adapters + PATH auto-detect
 internal/llm/        # LLM adapter (caller-default, config override)
@@ -317,7 +319,7 @@ archived/skills/     # former GitHub-workflow skills (reference only)
 | Decision | Choice | Why |
 |---|---|---|
 | CLI language | Go, static binary | curl-install from GH Releases; real JSON; clean Windows path later |
-| Core shape | single kernel (loop + store + locking + project/task/config mgmt) | one writer, one source of truth, deterministic scheduling |
+| Core shape | single kernel (loop + executor/work queue + store + locking + project/task/config mgmt) | one writer, one source of truth, deterministic scheduling |
 | Terminal access | tman interface, tmux backend v1 | swap in wezterm/terminator/native without touching kernel/executor |
 | Parallelism | 1 terminal session / itx session; 1 window / task | watchable, killable, survives terminal close |
 | Kernel loop home | window 0 of the terminal session | no daemon plumbing; user-visible; deterministic Go loop |

@@ -30,25 +30,25 @@ flowchart TB
 
     subgraph adapters["Adapters"]
         HAR[harness adapter<br/>claude · opencode · pi]
-        LLM[llm adapter<br/>default: caller's provider]
+        LLM["llm adapter<br/>default: caller's provider"]
     end
 
     subgraph tman["TERMINAL MANAGER (tman)"]
-        TIF[interface:<br/>CreateSession · AddWindow<br/>SendCommand · IsAlive · Kill]
+        TIF["interface:<br/>CreateSession · AddWindow<br/>SendCommand · IsAlive · Kill"]
         TMUX[tmux backend v1]
         FUT[future: wezterm · terminator · native]
     end
 
     subgraph state["~/.config/itx/"]
-        CFG[config.yml]
-        WORK[projects/&lt;slug&gt;/work.json]
-        MAN[projects/&lt;slug&gt;/sessions/&lt;sid&gt;/manifest.json]
+        CFG["config.yml"]
+        WORK["projects/&lt;slug&gt;/work.json"]
+        MAN["projects/&lt;slug&gt;/sessions/&lt;sid&gt;/manifest.json"]
     end
 
     subgraph term["terminal session {project}-{session-slug}"]
-        W0[window 0: kernel loop<br/>itx session run]
-        W1[window {slug}-01-{task}]
-        W2[window {slug}-02-{task}]
+        W0["window 0: kernel loop<br/>itx session run"]
+        W1["window {slug}-01-{task}"]
+        W2["window {slug}-02-{task}"]
     end
 
     U -->|slash command| SK --> CLI
@@ -84,16 +84,16 @@ Component boundaries:
 
 ```mermaid
 flowchart LR
-    A[curl install.sh \| bash] --> B{OS?}
-    B -->|linux / darwin| C{tmux present?}
-    B -->|windows| Z[print 'planned', exit]
-    C -->|no| Y[print install cmd<br/>brew/apt/dnf, exit 1]
-    C -->|yes| D[detect arch<br/>amd64/arm64]
-    D --> E[download binary + checksums<br/>from GitHub Releases]
-    E --> F[verify sha256]
-    F --> G[install to ~/.local/bin/itx]
-    G --> H[warn if not on PATH]
-    H --> I[offer: itx skill install all]
+    A["curl install.sh | bash"] --> B{"OS?"}
+    B -->|linux / darwin| C{"tmux present?"}
+    B -->|windows| Z["print 'planned', exit"]
+    C -->|no| Y["print install cmd<br/>brew/apt/dnf, exit 1"]
+    C -->|yes| D["detect arch<br/>amd64/arm64"]
+    D --> E["download binary + checksums<br/>from GitHub Releases"]
+    E --> F["verify sha256"]
+    F --> G["install to ~/.local/bin/itx"]
+    G --> H["warn if not on PATH"]
+    H --> I["offer: itx skill install all"]
 ```
 
 ### 2. Plan a session (skill-driven or manual)
@@ -164,11 +164,11 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    A[itx project status] --> B[read work.json]
-    B --> C[list non-complete sessions]
-    C --> D{user picks}
-    D -->|resume| E[itx session execute sid<br/>idempotent: reuse terminal session/worktrees,<br/>spawn only pending tasks]
-    D -->|stop| F[itx session stop sid<br/>kill windows + kernel loop,<br/>inprogress → blocked]
+    A["itx project status"] --> B["read work.json"]
+    B --> C["list non-complete sessions"]
+    C --> D{"user picks"}
+    D -->|resume| E["itx session execute sid<br/>idempotent: reuse terminal session/worktrees,<br/>spawn only pending tasks"]
+    D -->|stop| F["itx session stop sid<br/>kill windows + kernel loop,<br/>inprogress → blocked"]
 ```
 
 ## State files

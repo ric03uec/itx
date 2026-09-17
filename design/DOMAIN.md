@@ -20,6 +20,8 @@ layer operating on this structure.
 | **Goal** | The objective text on a node: for a session, the user-provided outcome; for a task, the sub-objective plus its Definition of Done. |
 | **Definition of Done (DoD)** | Per-task acceptance statement. A task may only transition to `done` when its DoD is met. |
 | **Manifest** | Logical view, not a file: a session node plus its task subtree (what `itx session show` renders). |
+| **Workspace** | Per-task working-directory record stored **on the task node** (`dir`, `is_worktree`, `branch`) — never inferred from disk. Always a git worktree, no exceptions: auto-created when the task is scheduled, auto-removed when the session reaches `done` (branch kept). |
+| **Caller PID** | Process id of whatever invoked the CLI to create or start a session/task (harness, agent, or user shell). Recorded on the node. |
 
 ## State machine
 
@@ -56,10 +58,11 @@ Sessions and tasks share the same state transition diagram:
 
 | Term | Definition |
 |---|---|
-| **Kernel** | The system core: management layer + execution ownership. Orchestrator loop, executor, storage adapter, project/session/task/config management. Deterministic. Touches terminals only through tman, harnesses only through the harness adapter. |
-| **Executor** | Kernel subcomponent that decides which task node runs next: owns the work queue, then materializes each scheduled task — isolation (git worktree + branch), launch command via the harness adapter — and runs it through the tman interface. |
+| **Kernel** | The system core: management layer + execution ownership. Scheduler loop, executor, storage adapter, project/session/task/config management. Deterministic. Touches terminals only through tman, harnesses only through the harness adapter. |
+| **Scheduler loop** | THE single main loop of the system (window 0). Each tick it walks sessions, tasks, and window liveness in one pass: reconciles, schedules, commits. There is no other loop. |
+| **Executor** | Kernel subcomponent **called by the scheduler loop each tick — not a loop itself**. Decides which task node runs next (work queue), then materializes each scheduled task — worktree + branch, launch command via the harness adapter — and runs it through the tman interface. |
 | **Terminal Manager (tman)** | Abstraction over terminal multiplexers/emulators. Small interface: create terminal session, add terminal window, send command, check liveness, kill. v1 backend: tmux. Future: wezterm, terminator, native OS terminals. |
-| **Harness Adapter** | Builds the interactive agent-harness launch command (claude, opencode, pi) from a command template + generated task prompt. Selection precedence: task override → session → `--harness` flag → config `default_harness` → PATH auto-detect. |
+| **Harness Adapter** | Builds the interactive agent-harness launch command from a command template + generated task prompt. Fixed v1 list: claude, opencode, pi. Selection precedence: task override → session → `--harness` flag → config `default_harness` → PATH auto-detect; none of the three found ⇒ fail fast. |
 | **LLM Adapter** | Direct (non-interactive) LLM calls the system needs (e.g. slug generation, summaries, failure triage). Defaults to the caller's harness provider/credentials; overridable in config. |
 
 ## Terminal terms (tman vocabulary)
@@ -67,7 +70,7 @@ Sessions and tasks share the same state transition diagram:
 | tman term | tmux equivalent | Notes |
 |---|---|---|
 | **Terminal session** | tmux session (`tmux new-session`, i.e. what `<prefix>:new` creates) | One per itx session. Name: `{project-name}-{session-slug}`. |
-| **Terminal window** | tmux window (`tmux new-window`, i.e. what `<prefix>c` creates) | One per task. Name: `{session-slug}-{task-order}-{task-slug}`. Window 0 is the kernel loop. |
+| **Terminal window** | tmux window (`tmux new-window`, i.e. what `<prefix>c` creates) | One per task. Name: `{session-slug}-{task-order}-{task-slug}`. Window 0 is the scheduler loop. |
 
 Other backends map these to their native concepts (e.g. wezterm: window/tab).
 
@@ -81,7 +84,7 @@ Other backends map these to their native concepts (e.g. wezterm: window/tab).
 | Task id | `t-<rand>` | `t-c3d4` |
 | Terminal session | `{project-name}-{session-slug}` | `itx-auth-refactor` |
 | Terminal window (task) | `{session-slug}-{task-order}-{task-slug}` | `auth-refactor-01-add-store` |
-| Worktree dir | `{repo}-{session-slug}-{task-slug}` (sibling of repo) | `itx-auth-refactor-add-store` |
+| Worktree dir | `~/.config/itx/projects/{project}/sessions/{session-id}/worktrees/{task-slug}` | `…/projects/itx/sessions/s-20260917-a1b2/worktrees/add-store` |
 | Task branch | `itx/{session-slug}/{task-slug}` | `itx/auth-refactor/add-store` |
 | DAG file | `~/.config/itx/dag.json` | |
 | Config | `~/.config/itx/config.yml` | |
@@ -96,3 +99,5 @@ Other backends map these to their native concepts (e.g. wezterm: window/tab).
 | panel | terminal window |
 | tmux wrapper | terminal manager (tman) |
 | store (as a standalone component) | storage adapter (inside the kernel) |
+| orchestrator loop / kernel loop / executor loop | scheduler loop (there is only one loop) |
+| itx skill update / itx config get,set | itx update / edit config.yml directly |

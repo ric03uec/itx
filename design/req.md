@@ -2,9 +2,10 @@
 
 ## Product statement
 
-ITX is a parallel task orchestrator. It turns a structured todo list — tasks with a
+ITX is a parallel task orchestrator. It turns a **session manifest** — tasks with a
 clear definition of done (DoD) and an explicit dependency hierarchy — into parallel,
-isolated agent-harness executions inside tmux. It ships as:
+isolated agent-harness executions inside tmux. Terminology is defined in
+[DOMAIN.md](DOMAIN.md). It ships as:
 
 1. A **Go CLI** (`itx`) — the deterministic core. All state lives on disk, all state
    changes go through the CLI.
@@ -28,57 +29,64 @@ isolated agent-harness executions inside tmux. It ships as:
   `itx skill install [claude|opencode|pi|all]`. The SKILL.md is embedded in the binary
   so skill and binary versions never drift.
 
-### FR2 — Sessions and todos (state management)
+### FR2 — Sessions and manifests (state management)
 - FR2.1 `itx session new` creates a session and returns its id. Supports bulk creation
-  from a JSON file (`--from todos.json`).
-- FR2.2 `itx todo add` appends a todo to a session; each todo carries a title, a
-  definition of done, and a `depends_on` list.
-- FR2.3 `itx todo update --session <id> <todo-id> …` updates a todo (status or
+  from a JSON file (`--from manifest.json`).
+- FR2.2 `itx task add` appends a task to the session manifest; each task carries a
+  title, a definition of done, and a `depends_on` list.
+- FR2.3 `itx task update --session <id> <task-slug> …` updates a task (status or
   arbitrary fields via JSON).
 - FR2.4 `itx session update <id> --status [inprogress|pending|blocked|complete|failed]`
   updates session status.
-- FR2.5 `itx session show <id>` reports full session state including per-todo status
-  and tmux liveness.
+- FR2.5 `itx session show <id>` reports full session state including per-task status
+  and terminal-window liveness.
 - FR2.6 `itx project status` reports all non-complete sessions for the current project
   (from `work.json`) so work can be resumed.
 - FR2.7 State layout:
-  - `~/.config/itx/projects/<slug>/sessions/<session-id>/todo.json` — tasks in a sorted
-    (dependency-ordered) array with status, DoD, harness/model used, timestamps, and
-    granular per-task status.
+  - `~/.config/itx/projects/<slug>/sessions/<session-id>/manifest.json` — the session
+    manifest: tasks in a sorted (dependency-ordered) array with status, DoD,
+    harness/model used, timestamps, and granular per-task status.
   - `~/.config/itx/projects/<slug>/work.json` — only the ids of sessions not in
     `complete` state.
   - `~/.config/itx/config.yml` — user configuration (default harness, etc.).
-- FR2.8 Concurrent writers (controller + N children) MUST NOT corrupt state: writes are
-  serialized with a file lock and are atomic (write-temp + rename).
+- FR2.8 Concurrent writers (kernel loop + N task windows) MUST NOT corrupt state:
+  writes are serialized with a file lock and are atomic (write-temp + rename).
 
 ### FR3 — Execution (orchestration)
-- FR3.1 `itx session execute <id>` starts execution: creates one tmux session for the
-  itx session, runs the orchestrator (controller loop) in window 0, and returns.
-  Execution survives the user's terminal closing.
-- FR3.2 One tmux **window per task**, each running its own harness instance. All
+- FR3.1 `itx session execute <id>` starts execution: creates one terminal session
+  (named `{project-name}-{session-slug}`) via tman, runs the kernel loop in window 0,
+  and returns. Execution survives the user's terminal closing.
+- FR3.2 One terminal **window per task** (named
+  `{session-slug}-{task-order}-{task-slug}`), each running its own harness instance. All
   unblocked tasks run in parallel (unlimited by default; optional `max_parallel` cap in
   config).
 - FR3.3 Task isolation: in a git repo, each task gets its own **git worktree + branch**.
   Outside a git repo, tasks share the project directory and itx warns.
-- FR3.4 The orchestrator sends each task window a harness command with a generated
+- FR3.4 The executor sends each task window a harness command with a generated
   prompt containing the task title, DoD, and the status-update contract.
 - FR3.5 Status updates are belt & suspenders:
-  - Children report via `itx todo update` (inprogress → complete/failed).
-  - The controller polls and reconciles: dead pane while inprogress ⇒ failed; completed
-    task ⇒ tear down window, unblock and spawn dependents.
-- FR3.6 `itx session stop <id>` halts execution (kills controller and task windows;
+  - Task sessions report via `itx task update` (inprogress → complete/failed).
+  - The kernel loop polls and reconciles: dead window while inprogress ⇒ failed;
+    completed task ⇒ tear down window, unblock and spawn dependents.
+- FR3.6 `itx session stop <id>` halts execution (kills kernel loop and task windows;
   in-flight tasks marked blocked).
-- FR3.7 Re-running `execute` on a partially-done session is idempotent: reuses the tmux
-  session and existing worktrees, spawns only what is still pending.
+- FR3.7 Re-running `execute` on a partially-done session is idempotent: reuses the
+  terminal session and existing worktrees, spawns only what is still pending.
 - FR3.8 Harness selection: default is auto-detected from PATH (claude → opencode → pi);
   `~/.config/itx/config.yml` `default_harness` overrides detection;
   `itx session execute --harness pi|opencode|claude --model <slug>` overrides both.
-  Per-todo harness/model overrides are honored.
+  Per-task harness/model overrides are honored.
 - FR3.9 Child harnesses run with the same user credentials/environment as the user's
   main harness (no separate auth).
+- FR3.10 Terminal access goes through the terminal manager (tman) interface. v1 ships
+  only the tmux backend; the interface (create session, add window, send command,
+  liveness, kill) must allow future backends (wezterm, terminator, native terminals)
+  without kernel/executor changes.
+- FR3.11 Direct (non-interactive) LLM calls go through the LLM adapter. By default it
+  uses the caller's harness provider/credentials; overridable in config.yml.
 
 ### FR4 — Skill behavior
-- FR4.1 The skill guides the agent to build a structured todo list (clear DoD per task,
+- FR4.1 The skill guides the agent to build a session manifest (clear DoD per task,
   explicit dependencies) interactively with the user, then persists it via the CLI.
 - FR4.2 The skill NEVER edits state files directly; every state change goes through the
   CLI.
@@ -87,9 +95,10 @@ isolated agent-harness executions inside tmux. It ships as:
 
 ## Non-functional requirements
 
-- NFR1 Deterministic core: given the same todo.json, the orchestrator makes the same
-  spawn/reconcile decisions. No LLM calls inside the CLI.
-- NFR2 Crash safety: controller restart recovers from todo.json alone.
+- NFR1 Deterministic kernel: given the same manifest.json, the kernel loop makes the
+  same spawn/reconcile decisions. LLM calls only ever happen through the LLM adapter,
+  never inside scheduling/reconciliation logic.
+- NFR2 Crash safety: kernel loop restart recovers from manifest.json alone.
 - NFR3 Observability: user can `tmux attach` to watch any task live; `session show`
   works from any terminal.
 - NFR4 Zero config to start: only tmux + one harness required; config.yml optional.

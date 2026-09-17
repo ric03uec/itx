@@ -14,30 +14,30 @@ CLI, the skill, tmux.
 | A4 | Checksum tamper | Corrupt downloaded binary before verify (test hook) | Install aborts loudly; no binary placed on PATH |
 | A5 | Skill install | `itx skill install all` with claude + opencode present, pi absent | Skill lands in both harness dirs; pi reported not-found, exit 0 |
 
-## B. Session & todo lifecycle (CLI only)
+## B. Session & task lifecycle (CLI only)
 
 | # | Scenario | Steps | Pass criteria |
 |---|----------|-------|---------------|
-| B1 | Create + inspect | `itx session new`; `itx todo add` ×3 (t02,t03 depend on t01); `itx session show` | Session id printed; todo.json dependency-ordered; show renders statuses/DoD |
-| B2 | Bulk import | `itx session new --from todos.json` | Same result as B1; invalid deps/cycles rejected with clear error, no session created |
-| B3 | Status updates | `itx todo update … --status inprogress` then `complete`; `itx session update … --status complete` | Timestamps set; session drops out of work.json; `itx project status` empty |
+| B1 | Create + inspect | `itx session new`; `itx task add` ×3 (t02,t03 depend on t01); `itx session show` | Session id printed; manifest.json dependency-ordered; show renders statuses/DoD |
+| B2 | Bulk import | `itx session new --from manifest.json` | Same result as B1; invalid deps/cycles rejected with clear error, no session created |
+| B3 | Status updates | `itx task update … --status inprogress` then `complete`; `itx session update … --status complete` | Timestamps set; session drops out of work.json; `itx project status` empty |
 | B4 | Resume index | Create 2 sessions, complete 1 | `itx project status` lists exactly the incomplete one |
-| B5 | Concurrent writes | 2 parallel loops of `itx todo update` on different todos | todo.json valid JSON throughout; no lost updates |
+| B5 | Concurrent writes | 2 parallel loops of `itx task update` on different tasks | manifest.json valid JSON throughout; no lost updates |
 
 ## C. Orchestrated execution
 
-Fake harness (script that sleeps, then `itx todo update --status complete`) unless
+Fake harness (script that sleeps, then `itx task update --status complete`) unless
 stated; real harness in C7.
 
 | # | Scenario | Steps | Pass criteria |
 |---|----------|-------|---------------|
-| C1 | Dependency-ordered parallel run | B1 session; `itx session execute <id>` | tmux session `itx-<slug>-<sid>` exists; window 0 = controller; only t01 spawns first; t02+t03 spawn in parallel after t01 completes; session → `complete`; work.json empties |
-| C2 | Worktree isolation | During C1, inspect worktrees | Each task ran in `<repo>-<sid>-<todo-id>` worktree on branch `itx/<sid>/<todo-id>`; main tree untouched |
-| C3 | Reconciler: dead pane | Kill t01's pane mid-run | t01 → `failed`; t02,t03 → `blocked`; session → `blocked`; controller reports and stands down |
-| C4 | Stop + resume | `itx session stop` mid-run; then `execute` again | Stop kills all windows, inprogress → blocked; re-execute reuses tmux/worktrees, spawns only non-terminal todos, completes |
-| C5 | Concurrency cap | `max_parallel: 1`; session with 2 independent todos | Second window appears only after first completes |
+| C1 | Dependency-ordered parallel run | B1 session; `itx session execute <id>` | tmux session `{project}-{session-slug}` exists; window 0 = kernel loop; only t01 spawns first; t02+t03 spawn in parallel after t01 completes (windows named `{session-slug}-{order}-{task-slug}`); session → `complete`; work.json empties |
+| C2 | Worktree isolation | During C1, inspect worktrees | Each task ran in `{repo}-{session-slug}-{task-slug}` worktree on branch `itx/{session-slug}/{task-slug}`; main tree untouched |
+| C3 | Reconciler: dead window | Kill t01's window mid-run | t01 → `failed`; t02,t03 → `blocked`; session → `blocked`; kernel loop reports and stands down |
+| C4 | Stop + resume | `itx session stop` mid-run; then `execute` again | Stop kills all windows, inprogress → blocked; re-execute reuses tmux/worktrees, spawns only non-terminal tasks, completes |
+| C5 | Concurrency cap | `max_parallel: 1`; session with 2 independent tasks | Second window appears only after first completes |
 | C6 | Harness selection | No config → auto-detect; then `--harness opencode`; then config `default_harness: pi` | Precedence flag > config > auto-detect observable in spawned command lines |
-| C7 | Real harness | 2-task session with real `claude` | Children call `itx todo update` per contract; session completes; results on task branches |
+| C7 | Real harness | 2-task session with real `claude` | Children call `itx task update` per contract; session completes; results on task branches |
 | C8 | Non-git project | Run C1 in a non-git dir | Warning about shared-dir isolation; tasks run in project dir; otherwise same lifecycle |
 
 ## D. Skill-driven flow (per harness)
@@ -46,7 +46,7 @@ Run once per harness: Claude Code, opencode, pi (pi best-effort in v1).
 
 | # | Scenario | Steps | Pass criteria |
 |---|----------|-------|---------------|
-| D1 | Plan via skill | Invoke `/itx` with a 3-task goal | Agent interviews for DoD + deps; creates session/todos via CLI only (no manual state edits); shows plan before executing |
+| D1 | Plan via skill | Invoke `/itx` with a 3-task goal | Agent interviews for DoD + deps; creates session/manifest via CLI only (no manual state edits); shows plan before executing |
 | D2 | Execute + monitor | Confirm; agent runs `itx session execute`, then `itx session show` | Agent reports progress from CLI output; user can `tmux attach` independently |
 | D3 | Blocker surfacing | Force a task failure | Agent surfaces failed/blocked state and options, doesn't silently retry forever |
 

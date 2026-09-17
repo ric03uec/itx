@@ -11,8 +11,8 @@ Move the old product out of the way; scaffold the new one.
   into `archived/`.
 - `go mod init github.com/ric03uec/itx`; scaffold `cmd/itx/main.go`, `internal/`
   package dirs, Makefile (`build`, `test`, `lint`, `release-build`).
-- cobra skeleton: `itx version` works; `session|task|project|skill|config` subcommands
-  registered as stubs.
+- cobra skeleton: `itx version` works; `init|session|task|project|skill|config`
+  subcommands registered as stubs.
 
 **UAT**
 - `make build && ./bin/itx version` prints a version.
@@ -23,30 +23,40 @@ Move the old product out of the way; scaffold the new one.
 - `make build`, `make test`, `make lint` all pass (empty test suite OK).
 - All legacy skills live under `archived/` and nothing references them from live docs.
 
-## Step 2 — Kernel state core (session/task/project/config management)
+## Step 2 — Kernel state core (DAG store + node management)
 
-- `internal/kernel`: config.yml load/save with defaults; work.json; manifest.json;
-  exclusive file lock + write-temp-then-rename; `XDG_CONFIG_HOME` respected.
+- `internal/kernel/store`: storage adapter interface (`Load` → DAG + revision,
+  `Commit` at expected revision → conflict error on mismatch) + JSON backend:
+  single `dag.json`, exclusive file lock, write-temp-then-rename, revision bump per
+  commit; `XDG_CONFIG_HOME` respected.
+- `internal/kernel`: DAG node/edge model (root, project, session, task; child +
+  dependency edges); shared state machine (waiting/running/paused/blocked/done/failed)
+  with transition validation; config.yml load/save with defaults; commit-retry helper
+  (re-read on conflict).
 - `internal/gitx`: project slug detection (git toplevel basename → cwd fallback,
   hash-suffix on collision).
-- Commands: `session new [--from]`, `session show`, `session update`, `task add`,
-  `task update`, `project status`, `config get|set`.
+- Commands: `init` (create root, idempotent), `session new [--from]`, `session show`,
+  `session update`, `task add`, `task update`, `project status`, `config get|set`.
 - Dependency validation on add/import: unknown `depends_on` slugs and cycles rejected;
-  tasks stored topologically sorted.
+  `session show` renders tasks in topological order.
 
 **UAT** (in a scratch repo, `XDG_CONFIG_HOME` pointed at a temp dir)
-- `itx session new` prints an id; manifest.json + work.json exist with correct shape.
-- `itx task add` ×3 with `--depends-on`; `itx session show` renders order + statuses.
-- `itx session new --from manifest.json` bulk-imports; cyclic file is rejected with a
-  clear error.
-- `itx session update <id> --status complete` removes the id from work.json;
-  `itx project status` no longer lists it.
-- Two concurrent `itx task update` invocations (shell loop) never corrupt
-  manifest.json.
+- `itx init` creates `dag.json` with a root node; running it again is a no-op.
+- `itx session new` prints an id; dag.json contains root→project→session child edges.
+- `itx task add` ×3 with `--depends-on`; `itx session show` renders order + statuses;
+  a cyclic or unknown dependency is rejected with a clear error.
+- `itx session new --from manifest.json` bulk-imports the same shape.
+- Illegal transition (e.g. `done` → `running`) is rejected; `itx session update <id>
+  --status done` removes it from `itx project status` output.
+- Two concurrent `itx task update` loops (shell) never corrupt dag.json and never
+  lose an update: conflicting commits are rejected by revision check and retried.
 
 **Exit criteria**
-- Unit tests cover: lock/atomic write, slug detection, cycle rejection, work.json
-  membership rules. `make test` green.
+- Unit tests cover: lock/atomic write, optimistic-lock conflict + retry, state-machine
+  transition rules, slug detection, cycle rejection, project-status query.
+  `make test` green.
+- Storage adapter interface has no JSON-specific leakage (kernel compiles against the
+  interface only).
 - All FR2 requirements (req.md) demonstrably met via CLI alone.
 
 ## Step 3 — Kernel loop + executor + tman + adapters
@@ -57,39 +67,41 @@ Move the old product out of the way; scaffold the new one.
   `itx/{session-slug}/{task-slug}`); non-git fallback = shared dir + warning.
 - `internal/harness`: adapter interface; claude/opencode/pi templates from config;
   PATH auto-detect (claude → opencode → pi); `--harness`/`--model` overrides.
-- `internal/kernel/executor`: work queue (next node in dep tree) + task
-  materialization — isolation, prompt generation (title + DoD + status-update
-  contract), harness command assembly, window request via tman.
+- `internal/kernel/executor`: work queue (next task node whose dependency edges are
+  all `done`) + task materialization — isolation, prompt generation (title + DoD +
+  status-update contract), harness command assembly, window request via tman.
 - `internal/llm`: LLM adapter interface; caller-provider default, config override.
   (v1 wiring only; no scheduling logic may call it.)
-- `internal/kernel`: kernel loop per arch.md workflow 3 — spawn unblocked via
-  executor, poll, reconcile (dead window ⇒ failed; complete ⇒ kill window, unblock
-  dependents; failed ⇒ dependents blocked), terminal-state handling, `max_parallel`.
-- Commands: `session execute` (idempotent), `session stop`, hidden `session run`.
+- `internal/kernel`: kernel loop per arch.md workflow 3 — spawn ready tasks via
+  executor, poll, reconcile (dead window ⇒ `failed`; `done` ⇒ kill window, unblock
+  dependents; `failed` ⇒ dependents `blocked`), every state change committed with
+  optimistic locking (retry on conflict), terminal-state handling, `max_parallel`.
+- Commands: `session execute` (idempotent), `session stop` (→ `paused`), hidden
+  `session run`.
 
 **UAT** (fake harness: shell script that sleeps then calls `itx task update`)
-- 3 tasks (t2,t3 depend on t1): `execute` spawns only t1; after t1 completes,
-  t2+t3 windows appear in parallel; session ends `complete`; work.json empties.
+- 3 tasks (t2,t3 depend on t1): `execute` spawns only t1; after t1 → `done`,
+  t2+t3 windows appear in parallel; session ends `done`; `itx project status` empties.
 - `tmux attach -t {project}-{session-slug}` shows the kernel loop in window 0 and
   live task windows named `{session-slug}-{order}-{task-slug}`.
 - Kill a task window mid-run: task → `failed`, dependents → `blocked`, session →
   `blocked`, kernel loop stands down with a report.
-- `itx session stop` kills all windows; re-`execute` resumes only pending tasks and
-  reuses existing worktrees.
+- `itx session stop` kills all windows, session + in-flight tasks → `paused`;
+  re-`execute` resumes only non-terminal tasks and reuses existing worktrees.
 - `max_parallel: 1` in config serializes spawning.
 
 **Exit criteria**
 - Integration test (real tmux + fake harness) covering the happy path and the
   dead-window reconcile path runs in CI. `make test` green.
-- FR3 requirements demonstrably met; kernel loop restart recovers from manifest.json
+- FR3 requirements demonstrably met; kernel loop restart recovers from dag.json
   alone.
 - Kernel (including its executor) has zero direct tmux calls (everything through tman) —
   enforced by review/grep in CI.
 
 ## Step 4 — Skill + embed
 
-- Write `skills/itx/SKILL.md`: interview → build session manifest with DoD/deps →
-  CLI calls only → execute → monitor → report. No direct state-file edits.
+- Write `skills/itx/SKILL.md`: interview → build session with DoD/deps → CLI calls
+  only → execute → monitor → report. No direct DAG-file edits.
 - `go:embed` the skill; `itx skill install [claude|opencode|pi|all]` writes to each
   harness's skill dir (verify pi's dir during this step); `itx skill update`
   refreshes.
@@ -110,7 +122,7 @@ Move the old product out of the way; scaffold the new one.
 
 - `install.sh` per arch.md workflow 1: OS/arch dispatch (windows stub), tmux gate,
   checksum-verified download from GH Releases, install to `~/.local/bin`, PATH check,
-  offer `itx skill install all`.
+  offer `itx init` + `itx skill install all`.
 - `.github/workflows/ci.yml`: test + lint on PR.
 - `.github/workflows/release.yml`: push to `v-X.Y` → test → cross-compile
   linux/darwin × amd64/arm64 → next `YY.MM.PP` tag → GH Release + checksums.txt.
@@ -126,8 +138,8 @@ Move the old product out of the way; scaffold the new one.
   GH Release; installer one-liner from README installs that release.
 
 **Exit criteria**
-- Fresh-machine install → skill install → 2-task session works on Linux and macOS
-  using only the README one-liner.
+- Fresh-machine install → init → skill install → 2-task session works on Linux and
+  macOS using only the README one-liner.
 - ci.yml green on PRs; release.yml produced at least one real release.
 
 ## Step 6 — Docs

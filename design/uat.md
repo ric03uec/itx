@@ -21,9 +21,9 @@ CLI, the skill, tmux.
 | # | Scenario | Steps | Pass criteria |
 |---|----------|-------|---------------|
 | B1 | Create + inspect | `itx session new --goal "…"` (id printed first); then `itx task add` ×3 against that id (t02,t03 depend on t01); `itx session show` | dag.json holds root→project→session→task child edges + dependency edges; caller pid recorded on session and tasks; show renders tasks in dependency order with statuses/DoD + % completion |
-| B2 | Bulk import | `itx session new --from manifest.json` | Same result as B1; invalid deps/cycles rejected with clear error, no nodes created |
+| B2 | Bulk import | `itx session new --from plan.json` (goal + tasks + deps in one file) | Same result as B1; invalid deps/cycles rejected with clear error, no nodes created |
 | B3 | Status updates | `itx task update … --status running` then `done`; `itx session update … --status done` | Timestamps set; illegal transitions (e.g. `done` → `running`) rejected; `itx project status` no longer lists the session |
-| B4 | Resume index | Create 2 sessions, complete 1 | `itx project status` (DAG query) lists exactly the non-terminal one |
+| B4 | Resume index | Create 2 sessions, mark 1 `done` | `itx project status` (DAG query) lists exactly the non-terminal one |
 | B5 | Concurrent writes | 2 parallel loops of `itx task update` on different tasks | dag.json valid JSON throughout; no lost updates — conflicting commits rejected by revision check and retried |
 | B6 | Failure cascade | Mark t01 `failed` | t02, t03 → `blocked`; session → `blocked` |
 

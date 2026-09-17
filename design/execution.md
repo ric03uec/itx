@@ -50,7 +50,7 @@ Move the old product out of the way; scaffold the new one.
   child edges and the caller pid on the session node.
 - `itx task add` ×3 with `--depends-on`; `itx session show` renders order + statuses;
   a cyclic or unknown dependency is rejected with a clear error.
-- `itx session new --from manifest.json` bulk-imports the same shape.
+- `itx session new --from plan.json` bulk-imports the same shape (goal + tasks).
 - Illegal transition (e.g. `done` → `running`) is rejected; `itx session update <id>
   --status done` removes it from `itx project status` output.
 - Two concurrent `itx task update` loops (shell) never corrupt dag.json and never

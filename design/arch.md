@@ -1,404 +1,349 @@
 # ITX — Architecture & Design
 
-> Revision in progress: [PLAN.md](PLAN.md) contains the updated architecture plan
-> based on user feedback and supersedes conflicting choices below for planning.
-> This document is the original baseline pending that plan's review.
-> Prompt provenance: [CHANGELOG.md](CHANGELOG.md).
-
-Terminology: see [DOMAIN.md](DOMAIN.md). Requirements: see [req.md](req.md).
+Terminology: [DOMAIN.md](DOMAIN.md). Requirements: [req.md](req.md).
+Implementation order: [execution.md](execution.md). Verification: [uat.md](uat.md).
+User prompts and decision history: [CHANGELOG.md](CHANGELOG.md).
 
 ## The core idea
 
 The entire system is a **DAG stored in one file per installation**. The root node is
-the system, created at install/init. Projects are children of the root; sessions
-(user objectives) are children of projects; tasks (sub-objectives) are children of
-sessions, with dependency edges between sibling tasks. Everything else is one of
-three layers operating on this data structure:
+the system; projects are children of the root, sessions are user objectives, and
+tasks are sub-objectives with dependency edges between sibling tasks.
 
-- **Insertion layer** — adds nodes (init, session new, task add, bulk import)
-- **Management layer** — the kernel: state transitions, queries, reconciliation,
-  optimistic-locking commits
-- **Execution layer** — materializes `running` task nodes into harness sessions in
-  terminal windows (executor → harness adapter → tman)
+- **Insertion layer** adds nodes through the CLI: init, session new, task add/import.
+- **Management layer** owns transitions, queries, reconciliation, and transactional writes.
+- **Execution layer** dispatches Ready work through the executor, harness adapter,
+  worker wrapper, and terminal manager (tman).
 
-Scaling stays deterministic because scheduling is a pure function of the DAG: same
-graph, same decisions, regardless of how many sessions and tasks exist.
-
-## The DAG
+One installation-wide scheduler makes deterministic decisions from durable state,
+configuration, and recorded observations. LLM calls are outside scheduling logic.
+Sessions register work with this scheduler; they never start their own loops.
 
 ```mermaid
 flowchart TB
-    R(("root<br/>(system)")) --> P1["project: itx"]
-    R --> P2["project: blog"]
-    P1 --> S1["session: auth-refactor<br/>goal: 'ship refactored auth'<br/>status: running"]
-    P1 --> S2["session: fix-ci<br/>status: waiting"]
-    S1 --> T1["task 01: add-store<br/>DoD + status: done"]
-    S1 --> T2["task 02: wire-cli<br/>status: running"]
-    S1 --> T3["task 03: docs<br/>status: waiting"]
-    T2 -. depends on .-> T1
-    T3 -. depends on .-> T2
+    R(("root")) --> P["project"]
+    P --> S["session: user objective"]
+    S --> A["task A: Succeeded"]
+    S --> B["task B: Running"]
+    S --> C["task C: Pending"]
+    B -. "depends on" .-> A
+    C -. "depends on" .-> B
 ```
 
-Solid edges = hierarchy (child). Dotted edges = task dependency. Sessions correlate
-1:1 with harness sessions; tasks correlate with the subtasks the harness works
-through.
+## State transitions
 
-## State machine (sessions and tasks share it)
+Sessions and tasks use **Pending, Ready, Running, Blocked, Succeeded, Failed,
+Cancelled**. Persist lowercase values (`pending`, `ready`, etc.) in the
+DAG and CLI. The diagram shows normal execution, user recovery, and cancellation
+together. The table also specifies preparation failures and observation recovery.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> waiting: node inserted
-    waiting --> running: scheduled (deps done)
-    running --> done: goal met / DoD satisfied
-    running --> paused: user stop
-    paused --> running: resume
-    running --> failed: died or gave up
-    waiting --> blocked: upstream failed
-    blocked --> waiting: unblocked / intervention
-    done --> [*]
-    failed --> [*]
+    [*] --> Pending
+    Pending --> Ready: Prerequisites satisfied and execution armed
+    Ready --> Running: Scheduler dispatch and worker acknowledgement
+    Running --> Succeeded: Worker exits and DoD validates
+    Running --> Failed: Execution or completion validation fails
+    Running --> Blocked: Agent needs user input
+    Blocked --> Ready: Required input accepted and execution permitted
+    Blocked --> Succeeded: User declares done with verified evidence
+    Failed --> Ready: User fixes failure reasons and re-arms
+    Failed --> Succeeded: User records verified manual completion
+    Pending --> Cancelled: User cancels task or session
+    Ready --> Cancelled: User cancels task or session
+    Running --> Cancelled: User cancels task or session
+    Blocked --> Cancelled: User cancels task or session
+    Failed --> Cancelled: User cancels task or session
+    Succeeded --> [*]
+    Cancelled --> [*]
 ```
 
-`done` and `failed` are terminal. A `failed` task cascades `blocked` to its
-dependents; the session goes `blocked` (or `failed` if nothing can proceed).
+### Task state meanings and transition triggers
 
-## High-level product diagram
+| State | Meaning | Possible next states and triggers |
+|---|---|---|
+| **Pending** | Registered, but prerequisites or execution permission are unmet. Dependency waits belong here; cannot be scheduled. | **Ready** when dependencies, inputs, and execution permission are satisfied. **Failed** on definitive prerequisite/setup error. **Cancelled** on task/session cancellation. Never directly Running. |
+| **Ready** | Scheduler can pick up the task. May wait for capacity; a durable launch/resume reservation prevents duplicate dispatch. | **Running** after scheduler dispatch and worker startup/resume acknowledgement. **Pending** if eligibility is withdrawn before dispatch. **Failed** on preparation/launch failure or launch/resume acknowledgement timeout. **Cancelled** on cancellation. |
+| **Running** | Worker acknowledged startup/resumption; no subsequent transition has been confirmed. Show last worker observation separately. | **Blocked** when the agent requests required user input and cannot proceed. **Succeeded** after worker exit and validated DoD/commit/branch/PR. **Failed** on execution or completion-validation failure, confirmed suspension interruption, or worker observation timeout. **Cancelled** on cancellation. |
+| **Blocked** | Agent needs user input and cannot move forward. Persist the request and attempt identity. | **Ready** when required input is accepted and execution is permitted. **Succeeded** when the user explicitly declares the work done, the same completion evidence validates, and no active worker remains. **Failed** on definitive worker/protocol failure or parked-worker observation timeout. **Cancelled** on cancellation. No direct Running transition. |
+| **Succeeded** | DoD satisfied; commit SHA, branch, and PR recorded; no active worker. | None. User approval and cleanup are separate operations. |
+| **Failed** | Definitive startup, execution, or validation failure; no automatic retry. | **Ready** once the user fixes failure reasons and explicitly re-arms work, prior execution is stopped, and scheduling prerequisites hold. **Succeeded** on explicit user resolution with validated completion evidence and no active worker. **Cancelled** on abandonment. Otherwise stays Failed. |
+| **Cancelled** | User abandoned the task or its session. Admission revoked immediately; any worker must stop. | None. Terminal even while physical termination is being reconciled. Late worker reports cannot restore Running or Succeeded. |
+
+Normal flow is Pending → Ready → Running. Both user-input resolution and failure
+repair pass through Ready, leaving dispatch to the scheduler. A fast completion
+still records Ready → Running → Succeeded, even within one scheduler tick.
+
+An execution attempt has an immutable ID and retains its terminal outcome. Repairing
+a Failed task schedules a new attempt without rewriting failure history. A manual
+Blocked/Failed → Succeeded resolution records the user, reason, and evidence; it
+does not fabricate a successful worker exit. Revoke/stop any parked worker and
+confirm shutdown before committing manual success.
+
+### Blocking, pausing, and parent propagation
+
+- **Blocked is specifically a user-input wait**, not a dependency failure or capacity
+  wait. Record the question and response. Park execution at a wrapper-controlled
+  boundary; input makes work Ready, then the scheduler authorizes resume. Reuse the
+  parked worker or replace it only after confirmed exit; never run two workers.
+- User pause is separate `active`/`suspended` control. Suspension revokes admission
+  and requests worker stop. Unstarted Ready work returns Pending. A confirmed
+  execution interruption becomes Failed with reason Suspended. Explicit re-arm is
+  required; never automatically resume because a dependency changed.
+- Cancellation atomically sets the session and **every unfinished child** to
+  Cancelled, including Pending, Ready, Running, Blocked, and Failed.
+  Preserve Succeeded outputs and all attempt history. Track stop requests/exit
+  separately; durable cancellation is not proof that an OS process has exited.
+- Parent suspension applies to unfinished children. Track individual versus parent
+  stop reasons; parent re-arm clears only parent-origin stops. An independently
+  paused or failed task needs explicit selection for recovery.
+- A blocked child does not manufacture input requests on siblings. A session remains
+  Running while authorized work can progress; it becomes Blocked when required user
+  input prevents further session progress.
+- Proposed first-failure policy, still for review: suspend the session and its other
+  unfinished work; retain the failed task; settle the session Failed after affected
+  execution stops. Other sessions continue. Repair alone does not clear parent stops.
+
+### Session interpretation
+
+Sessions share the transition table, but describe orchestration rather than one
+worker: Pending awaits prerequisites, Ready awaits scheduler admission, Running
+includes task work and ordered integration. Missing execution/integration evidence
+uses bounded reconciliation of the recorded action, not another lifecycle state.
+Blocked means required user input prevents progress.
+
+Blocked → Succeeded and Failed → Succeeded require explicit user resolution plus
+validated required child outputs and session commit/branch/PR. A parent completion
+command never manufactures successful children. Succeeded requires no active work.
+Cancelled forbids future dispatch and continues reconciling worker shutdown.
+
+## Components and scheduler ownership
 
 ```mermaid
 flowchart TB
-    subgraph user["User"]
-        U["Terminal / Agent harness"]
-    end
-
-    subgraph insertion["INSERTION LAYER"]
-        SK["itx skill<br/>installed per harness"]
-        CLI["itx CLI<br/>init · session new · task add · import"]
-    end
-
-    subgraph kernel["KERNEL — management + execution layers"]
-        LOOP["scheduler loop — THE single main loop<br/>walk sessions + tasks · schedule · reconcile · commit"]
-        subgraph executor["executor (execution layer — called per tick, not a loop)"]
-            QUEUE["work queue<br/>next task node with deps done"]
-            LAUNCH["task launch<br/>worktree · prompt · command assembly"]
-        end
-        MGMT["node mgmt<br/>project · session · task · config"]
-        SA["storage adapter<br/>optimistic locking"]
-    end
-
-    subgraph adapters["External adapters"]
-        HAR["harness adapter<br/>claude · opencode · pi"]
-        LLM["llm adapter<br/>default: caller's provider"]
-    end
-
-    subgraph tman["TERMINAL MANAGER (tman)"]
-        TIF["interface:<br/>CreateSession · AddWindow<br/>SendCommand · IsAlive · Kill"]
-        TMUX["tmux backend v1"]
-        FUT["future: wezterm · terminator · native"]
-    end
-
-    subgraph storage["Storage"]
-        DAG["~/.config/itx/dag.json<br/>single file · whole DAG"]
-        SQL["future: sqlite"]
-        CFG["config.yml"]
-    end
-
-    subgraph term["terminal session {project}-{session-slug}"]
-        W0["window 0: scheduler loop<br/>itx session run"]
-        W1["window {slug}-01-{task}"]
-        W2["window {slug}-02-{task}"]
-    end
-
-    U -->|slash command| SK --> CLI
-    U -->|direct| CLI
-    CLI -->|insert nodes / transition states| kernel
-    SA --> DAG
-    SA -.-> SQL
-    LOOP -->|unblocked tasks| QUEUE --> LAUNCH
-    LAUNCH -->|build launch command| HAR
-    kernel -.->|non-interactive calls| LLM
-    LAUNCH -->|run command in new window| TIF
-    TIF --> TMUX
-    TMUX --> term
-    W1 & W2 -->|itx task update| CLI
+    U["User / agent"] --> SK["Thin ITX skill"]
+    U --> CLI["CLI: insert, query, control, report"]
+    SK --> CLI
+    CLI --> K["Kernel: validated transactions"]
+    K --> STORE["Storage adapter: versioned DAG + OCC"]
+    LOOP["One global scheduler: dedicated control tmux session"] --> K
+    LOOP --> EXEC["Executor: asynchronous actions, no scheduler loop"]
+    EXEC --> HAR["Harness adapter: claude / opencode / pi"]
+    EXEC --> GIT["Git / GitHub adapter"]
+    EXEC --> TMAN["tman: tmux backend"]
+    TMAN --> W["Per-session terminals / per-task worker wrappers"]
+    HAR --> W
+    W -->|"start, input request, exit receipts"| CLI
+    STORE --> DAG["dag.json + pending history events"]
+    STORE --> HIST["Per-project JSONL audit history"]
 ```
 
-Component boundaries:
+- **Kernel** owns the state reducer and all validated mutations. CLI processes and
+  scheduler use the same transaction contract; the scheduler is the sole dispatcher,
+  not the only process writing through the store.
+- **Scheduler** holds an installation-wide lock for its lifetime. First execute
+  bootstraps it in a dedicated control tmux session and checks a process handshake.
+  Concurrent execute calls converge on one owner; session terminals contain no loop.
+- Each bounded tick reconciles receipts, applies controls, computes eligibility in
+  stable order, and persists intents. Slow preparation, git/PR, and launch actions
+  run asynchronously and return outcomes to the same loop. No DAG lock across I/O.
+- `max_parallel` is global, including reservations and executing workers; default 0
+  means unlimited. Parked workers cannot resume without scheduler capacity admission.
+- **Executor** implements actions with immutable IDs and reconciliation; it is not
+  another scheduling loop. Pausing one session never stops the scheduler.
+- **Harness adapter** supports claude/opencode/pi. Effective precedence: task override
+  → execute flag → session setting → config → PATH detection in that order. None
+  installed means fail fast. Resolve and persist effective configuration per attempt.
+- **LLM adapter** provides optional direct calls for slugs, summaries, and triage using
+  the caller's provider/credentials or config override. Never inside scheduling.
+- **tman** manages sessions/windows, not worker lifecycle truth. An idle shell is not
+  a running agent. The worker wrapper supplies execution evidence.
 
-- **Kernel** — implements the management layer and owns the execution layer.
-  There is exactly **one loop** in the whole system: the scheduler loop. Each tick
-  it walks the DAG (sessions and tasks alike), reconciles reality (window liveness,
-  reported statuses), schedules ready tasks, and commits. Everything else —
-  executor, node management, storage adapter — is a function called from this loop.
-  Sole writer of the DAG. Deterministic. Touches terminals only through tman,
-  harnesses only through the harness adapter.
-- **Executor (kernel subcomponent, not a loop)** — invoked by the scheduler loop
-  each tick: picks the next task nodes whose dependency edges are all `done` (the
-  work queue), then materializes each one (worktree, prompt, harness command via
-  the harness adapter) and runs it through the tman interface.
-- **Storage adapter** — narrow load/commit interface with optimistic locking. v1:
-  single JSON file. Swappable to sqlite with minimal effort; no kernel changes.
-- **tman (terminal manager)** — narrow interface (`CreateSession`, `AddWindow`,
-  `SendCommand`, `IsAlive`, `Kill`); tmux is the only v1 backend; wezterm/terminator/
-  native terminals slot in behind the same interface later.
-- **Harness adapter** — command construction for the fixed v1 list: claude /
-  opencode / pi. Auto-detect probes PATH in that order; if none of the three is
-  found, execution **fails fast** with a clear error (no fallback).
-- **LLM adapter** — direct non-interactive LLM calls (slug generation, summaries,
-  failure triage). Defaults to the caller's harness provider; overridable in config.
-
-## Key workflows
-
-### 1. Install + init
-
-```mermaid
-flowchart LR
-    A["curl install.sh | bash"] --> B{"OS?"}
-    B -->|linux / darwin| C{"tmux present?"}
-    B -->|windows| Z["print 'planned', exit"]
-    C -->|no| Y["print install cmd<br/>brew/apt/dnf, exit 1"]
-    C -->|yes| D["detect arch<br/>amd64/arm64"]
-    D --> E["download binary + checksums<br/>from GitHub Releases"]
-    E --> F["verify sha256"]
-    F --> G["install to ~/.local/bin/itx"]
-    G --> H["itx init — create DAG root"]
-    H --> I["offer: itx skill install all"]
-```
-
-### 2. Plan a session (insertion layer)
+## Execution and recovery
 
 ```mermaid
 sequenceDiagram
-    actor User
-    participant Agent as Agent (skill)
-    participant K as Kernel (via CLI)
-
-    User->>Agent: /itx "achieve outcome X"
-    Agent->>User: interview: goal? DoD per task? dependencies?
-    Agent->>K: itx session new --goal "…"
-    K->>K: insert session node under project (project node auto-inserted under root on first use)
-    Note over K: session-status=waiting · caller_pid recorded
-    K-->>Agent: <session-id>
-    loop each task (session already exists, id in hand)
-        Agent->>K: itx task add --session <sid> --title … --dod … --depends-on …
-        K->>K: insert task node + dependency edges (cycle check)
-        Note over K: task-status=waiting
-    end
-    Agent->>K: itx session show <sid>
-    Agent->>User: confirm plan (goal, tasks, DoD, deps)
-    User->>Agent: go
-    Agent->>K: itx session execute <sid>
-    loop while session-status=running
-        Agent->>K: itx session show <sid>
-        Agent->>User: report progress — % completion (done tasks / total)
+    participant C as CLI
+    participant D as DAG/store
+    participant S as Global scheduler
+    participant X as Executor
+    participant W as Worker wrapper
+    C->>D: Register session execution request
+    C->>S: Ensure singleton process handshake
+    loop Each tick across all sessions
+        S->>D: Reconcile evidence and promote eligible work to Ready
+        S->>D: Commit launch/resume intent and reserve capacity
+        S->>X: Dispatch persisted action asynchronously
+        X->>X: Reconcile worktree and preparation
+        X->>W: Launch or resume tagged attempt
+        W->>D: Durable startup acknowledgement
+        S->>D: Commit Running for matching attempt/generation
+        W->>D: Input request or exit/outcome receipt
+        S->>D: Validate and commit transition
     end
 ```
 
-`itx session new` always comes first and returns the id; tasks are then attached to
-that id one CLI call at a time (or all at once with `--from`, where the file carries
-the goal plus the full task list). After `execute`, the calling harness is
-instructed to keep reporting session progress as **% completion**.
+Before side effects, persist `{action_id, session_id, task_id, attempt_id,
+control_generation, input_sha, workspace, effective_launch_config, phase}`.
+Internal action phases are reserve → prepare → launch → acknowledge → outcome.
 
-### 3. Execute / orchestrate (management + execution layers)
+- Wrapper captures startup, harness exit, input requests, stop acknowledgement,
+  and completion evidence. Reports carry attempt ID and control generation.
+- Cancellation/re-arm fences stale reports. No replacement until the previous
+  process is confirmed stopped; ambiguous outcomes are reconciled, never replayed blindly.
+- Restart adopts live attempts using the DAG, wrapper receipts, and process evidence.
+  A missing window alone does not prove a particular exit outcome. Confirmed failures
+  become Failed. Missing evidence retains the last confirmed lifecycle state during
+  bounded reconciliation. Record the specific outstanding action, last evidence,
+  error, and deadline; expose these in status output without adding a catch-all state.
+- An expired launch/resume acknowledgement or worker-observation deadline becomes
+  Failed with a concrete reason such as `LaunchAckTimeout`, `ResumeAckTimeout`, or
+  `WorkerObservationTimeout`. Fence further execution and request stop. A timeout
+  proves the supervision contract failed, not that the worker exited: retain its
+  ownership/capacity reservation until shutdown or non-launch is confirmed. A later
+  receipt cannot silently recover Failed; user recovery follows the transition table.
+  User-input waiting itself has no failure deadline; parked-worker supervision does.
+- Use a deterministic, idempotent configured preparation command, recording exit/logs.
+  Pass environment explicitly, not from stale tmux environment; record secret
+  references, not credentials. Construct argv/prompt files rather than unsafe shell text.
+- Recovery promises durable, reconcilable execution state, not uninterrupted work or
+  exactly-once arbitrary side effects performed by agents.
 
-```mermaid
-sequenceDiagram
-    participant EXE as itx session execute
-    participant T as tman
-    participant K as scheduler loop (window 0)
-    participant X as executor (called by loop)
-    participant W as task windows (harness)
-    participant D as DAG (via storage adapter)
+## Worktrees, stacked PRs, and durable completion
 
-    Note over EXE: every step below is idempotent — re-running execute is always safe
-    EXE->>T: CreateSession {project}-{session-slug} (no-op if exists)
-    EXE->>T: window 0 ← itx session run <sid> (no-op if already running)
-    EXE->>T: IsAlive(window 0)? — verify the loop is actually live
-    EXE->>D: session → running · record caller_pid
-    Note over D: session-status=running — set only AFTER the loop is live.<br/>A halfway failure leaves session-status=waiting, re-execute restarts cleanly
-    EXE-->>EXE: return (execution detached)
-
-    loop THE single scheduler loop — every N sec, sessions + tasks + everything
-        K->>D: load DAG (revision R)
-        K->>X: reconcile + schedule in one pass
-        alt task ready (deps done, under max_parallel)
-            X->>X: create worktree under session dir + branch, build prompt + harness cmd
-            X->>T: AddWindow {session-slug}-{order}-{task-slug}, SendCommand
-            X->>T: IsAlive(window)? — verify spawn
-            X->>D: task → running · record window + caller_pid (commit @R, retry on conflict)
-            Note over D: task-status=running — set only AFTER the window is live
-        end
-        W->>D: itx task update --status done / failed
-        K->>T: IsAlive(window)?
-        alt window dead while task-status=running
-            K->>D: task-status=failed
-        end
-        alt task-status=done
-            K->>T: Kill(window)
-            K->>K: dependents become schedulable
-        end
-        alt task-status=failed
-            K->>D: dependents task-status=blocked · session-status=blocked
-        end
-        K->>K: print progress — % completion (done tasks / total)
-    end
-    K->>D: all tasks done → session-status=done · remove worktrees (branches kept)
-```
-
-One loop, not two: the scheduler loop in window 0 is the only loop in the system —
-it walks sessions, tasks, liveness, and terminal states in a single pass per tick.
-The executor is a function it calls, not a second loop. Every operation (`execute`,
-CreateSession, AddWindow, state commits) is idempotent, so a crash at any point is
-recovered by simply running `execute` again.
-
-### 4. Resume / pause
+The session pins an exact main commit and creates **another worktree on its own
+branch off main**. It can contain plans and session-owned files alongside integrated
+outputs. It is neither main's checkout nor any task's worktree. Main stays clean.
 
 ```mermaid
 flowchart LR
-    A["itx project status"] --> B["DAG query:<br/>sessions of this project not done/failed"]
-    B --> C{"user picks"}
-    C -->|resume| D["itx session execute sid<br/>idempotent: reuse terminal session/worktrees,<br/>schedule only waiting tasks<br/>session-status=running"]
-    C -->|pause| E["itx session stop sid<br/>kill windows + scheduler loop<br/>session-status=paused, running tasks → paused"]
+    M["Pinned main commit — main checkout unchanged"] --> S["Separate session branch/worktree — plans and integration"]
+    M --> A["Task A branch/worktree"]
+    A -->|"recorded output SHA"| B["Task B branch/worktree"]
+    A -. "PR targets session" .-> S
+    B -. "initial PR targets A" .-> A
+    S -. "final PR, user-controlled merge" .-> M
 ```
+
+- Root tasks branch from pinned main. Dependent B pins A's recorded output and opens
+  its PR against A's branch before A merges. Pass needed session planning files as
+  explicit task inputs; do not assume they exist in task worktrees.
+- Parent session persists dependency-respecting merge order, PR identities/base/head
+  revisions, and merge commits. Retarget dependent PRs as ancestors integrate.
+  Persist PR-operation intents and reconcile ambiguous remote outcomes before retry.
+- Proposed stack policy: ancestry-preserving merge commits; squash/rebase restacking
+  deferred. Proposed fan-in rule: wait for multiple prerequisite outputs to integrate
+  into the session branch, then pin that commit. Conflicts needing user input block
+  the session. These policies remain for review.
+- Every successful task records **DoD + commit SHA + branch + PR**. Manual completion
+  from Blocked or Failed requires the same evidence and no active worker.
+- Session success requires all required task outputs and integrated session output
+  with a final PR against main. Final main merge is user-controlled. Exact task-merge
+  authorization remains to be settled; a recorded order is not permission to merge.
+- Approval identifies the reviewed revision; changed output invalidates approval.
+  Cleanup requires explicit task approval or covering session approval, worker exit,
+  pushed durable outputs, no remaining consumers, and no dirty/untracked work.
+  Keep branches/history. Cleanup is retryable and does not rewrite successful status.
 
 ## Storage
-
-### Storage adapter interface
 
 ```go
 type Revision uint64
 
 type Store interface {
     Load(ctx context.Context) (*DAG, Revision, error)
-    // Commit persists the DAG iff the stored revision still equals expected.
-    // Returns ErrConflict otherwise; caller re-loads, re-applies, retries.
     Commit(ctx context.Context, dag *DAG, expected Revision) error
 }
 ```
 
-Optimistic locking: every writer follows load → mutate → commit-at-revision; on
-`ErrConflict` it re-loads and retries. The JSON backend implements Commit with an
-exclusive flock + revision check + write-temp-then-rename, so writes are atomic and
-predictable under N concurrent task windows. A sqlite backend implements the same
-interface with a transaction — no kernel changes.
+`~/.config/itx/dag.json` holds schema version, revision, nodes/edges, attempts,
+action intents, approvals, and pending audit events. Root is created once by init;
+projects register on first use. Hierarchy is append-mostly, no reparenting. Dependency
+edges connect sibling tasks and reject unknown references/cycles. Only sessions and
+tasks have lifecycle status. Caller PID is provenance, not durable process identity.
 
-### `~/.config/itx/dag.json` (single file per installation)
+Session/task workspace records include exact path, worktree flag, branch, and input
+SHA. Immutable project/session/task/attempt IDs identify resources; slugs are display
+labels. Example paths under the configured ITX directory:
 
-```json
-{
-  "revision": 42,
-  "nodes": [
-    { "id": "root", "type": "root", "created_at": "2026-09-17T09:00:00Z" },
-    {
-      "id": "p-itx", "type": "project",
-      "name": "itx", "slug": "itx",
-      "dir": "/home/devashish/workspace/ric03uec/itx",
-      "created_at": "…"
-    },
-    {
-      "id": "s-20260917-a1b2", "type": "session",
-      "slug": "auth-refactor",
-      "goal": "ship refactored auth with tests",
-      "status": "running",
-      "harness": "claude", "model": "",
-      "caller_pid": 40100,
-      "created_at": "…", "started_at": "…", "finished_at": ""
-    },
-    {
-      "id": "t-c3d4", "type": "task",
-      "order": 1, "slug": "add-store",
-      "title": "Add store package",
-      "goal": "storage adapter package",
-      "definition_of_done": "adapter with optimistic locking; unit tests pass",
-      "status": "done",
-      "harness": "", "model": "",
-      "workspace": {
-        "dir": "~/.config/itx/projects/itx/sessions/s-20260917-a1b2/worktrees/add-store",
-        "is_worktree": true,
-        "branch": "itx/auth-refactor/add-store"
-      },
-      "window": "auth-refactor-01-add-store",
-      "caller_pid": 43210,
-      "created_at": "…", "started_at": "…", "finished_at": "…",
-      "notes": ""
-    }
-  ],
-  "edges": [
-    { "from": "root",             "to": "p-itx",            "type": "child" },
-    { "from": "p-itx",            "to": "s-20260917-a1b2",  "type": "child" },
-    { "from": "s-20260917-a1b2",  "to": "t-c3d4",           "type": "child" },
-    { "from": "t-e5f6",           "to": "t-c3d4",           "type": "dependency" }
-  ]
-}
+```text
+dag.json
+config.yml
+projects/<project-id>/history.jsonl
+projects/<project-id>/sessions/<session-id>/worktree/
+projects/<project-id>/sessions/<session-id>/worktrees/<task-id>/
 ```
 
-Rules:
-- `root` is created once by `itx init`; project nodes are inserted on first use in a
-  directory; the graph is append-mostly (nodes are never re-parented).
-- Statuses per the shared state machine: `waiting | running | paused | blocked |
-  done | failed`; only session and task nodes carry status.
-- `dependency` edges only between tasks of the same session; cycle-checked on insert.
-- Per-task `harness`/`model` empty ⇒ inherit session ⇒ config ⇒ auto-detect
-  (claude → opencode → pi only; none found ⇒ fail fast).
-- `workspace` is tracked in the node itself — `dir`, `is_worktree`, `branch` — never
-  inferred from disk. Worktrees are the only way of working (no exceptions): created
-  automatically under
-  `~/.config/itx/projects/{project}/sessions/{session-id}/worktrees/{task-slug}`
-  when a task is scheduled, removed automatically when the session reaches `done`
-  (branches are kept for merging). A project dir that is not a git repo fails fast
-  at `execute`.
-- `caller_pid` is recorded whenever a session or task is created or started —
-  the CLI captures its parent process id, so it works identically for a harness,
-  an agent, or a user driving the CLI directly.
-- "Active work" is a query (sessions not `done`/`failed`), not a separate file.
+- JSON commit takes a separate stable lock file, validates expected revision, writes
+  and fsyncs a temp file, atomically renames, then fsyncs the directory.
+- On conflict, reload and reapply only state changes with bounded exponential
+  backoff/jitter; surface exhaustion. Never retry external effects inside the closure.
+- Commit pending history events in the DAG transaction (outbox). Append to per-project
+  JSONL with event-ID deduplication and fsync before acknowledging delivery. Repair
+  torn tails under lock. Audit events include actor, reason, transition, and action/
+  attempt/result references; they are not competing scheduler authority.
+- Version snapshot/history schemas, reject incompatible writers, and quiesce for
+  incompatible migration. SQLite is a later adapter, not a v1 implementation.
 
-### `~/.config/itx/config.yml`
+### Configuration
 
 ```yaml
-default_harness: ""        # "" → auto-detect PATH: claude → opencode → pi (fixed list; none found → fail fast)
-max_parallel: 0            # 0 = unlimited
+default_harness: ""        # PATH: claude → opencode → pi; none found means error
+max_parallel: 0            # installation-wide; 0 = unlimited
 poll_interval_seconds: 30
-terminal: tmux             # tman backend; only tmux in v1
-storage: json              # storage adapter backend; sqlite later
-harnesses:                 # command templates; user-fixable without a new binary
-  claude:   'claude --dangerously-skip-permissions {{prompt}}'
+terminal: tmux
+storage: json
+workspace_prepare_command: "" # deterministic/idempotent; empty = no extra preparation
+harnesses:                 # user-editable templates, resolved safely by adapter
+  claude: 'claude --dangerously-skip-permissions {{prompt}}'
   opencode: 'opencode {{prompt}}'
-  pi:       'pi {{prompt}}'
-llm:                       # LLM adapter override; empty → caller's provider
-  provider: ""
+  pi: 'pi {{prompt}}'
+llm:
+  provider: ""             # default: caller's provider
   model: ""
 ```
 
-## CLI surface
+## CLI and skill contract
 
-```
-itx init                                 # create DAG root (run once, by installer)
+```text
+itx init
 itx session new --goal G [--slug S] [--harness X] [--model Y]
-                                         # create empty session with a goal, print id
-itx session new --from plan.json         # bulk create: file carries the session goal
-                                         # PLUS the full task list (title/DoD/deps) —
-                                         # session + all tasks inserted in one call
-itx session show <id>                    # manifest view + % completion
-itx session update <id> --status [waiting|running|paused|blocked|done|failed]
-itx session execute <id> [--harness X] [--model Y]   # idempotent
-itx session stop <id>                    # session-status: running → paused
-itx session run <id>                     # hidden; scheduler loop (window 0)
-itx task add --session <id> --title T --dod D [--depends-on a,b] [--json '{…}']
-itx task update --session <id> <task-slug> [--status S] [--json '{…}']
-itx project status                       # DAG query: this project's non-terminal sessions
+itx session new --from plan.json
+itx session show <session-id>
+itx session update <session-id> --status <state>
+itx session execute <session-id> [--harness X] [--model Y]
+itx session stop <session-id>
+itx scheduler run                         # hidden; installation-wide loop
+itx task add --session <session-id> --title T --dod D [--depends-on a,b]
+itx task update --session <session-id> <task-id> [--status S] [--json '{…}']
+itx project status
 itx skill install [claude|opencode|pi|all]
-itx update                               # update binary + installed skills to latest
-                                         # release; idempotent — no-op when current
+itx update
 itx version
 ```
 
-No `itx config` command: configuration is `~/.config/itx/config.yml`, edited
-directly by the user.
+Session creation returns its ID before tasks are attached; bulk plan.json carries
+the goal and complete task list. Updates are validated commands, not unrestricted
+status assignment: worker acknowledgements, evidence, and actor authority are
+required by the transition table. Input responses/manual completion can use task
+update payloads; exact evidence/approval payload schema is an implementation detail
+to settle before CLI work. Setting session status cancelled applies to its subtree.
 
-## tman interface
+Execute registers/reconciles work idempotently, reusing resources; it never silently
+retries failures or clears individual pauses. Explicit re-arm selects the intended
+work. Stop suspends a session without killing the global loop. Project status lists
+unfinished work, including recoverable Failed states. Show reports states, reasons,
+worker observations, requests, artifacts, and succeeded/total percent completion.
+
+Skill flow: interview goal/DoD/dependencies → insert through CLI → confirm → execute
+→ monitor/report progress. Never edit the DAG directly. Config is edited as a file;
+there is no separate config or skill-update command.
+
+## Terminal manager and package layout
 
 ```go
 type TerminalManager interface {
-    CreateSession(name string) error            // idempotent
+    CreateSession(name string) error
     HasSession(name string) bool
     AddWindow(session, window, dir string) error
     SendCommand(session, window, cmd string) error
@@ -408,51 +353,36 @@ type TerminalManager interface {
 }
 ```
 
-v1: `tmuxBackend` implements this with `tmux new-session / new-window / send-keys /
-list-windows / kill-window / kill-session`. Backend chosen by `terminal:` in
-config.yml; adding wezterm/terminator/native = new implementation, no caller changes.
+tmux is the v1 backend. Session/window creation reconciles immutable resource IDs;
+SendCommand is not inherently idempotent, so wrapper ownership/receipts prevent
+duplicate execution. IsAlive observes terminal existence, not worker health.
 
-## Package layout
-
-```
+```text
 cmd/itx/main.go
-internal/cli/        # cobra command wiring only (insertion + query surface)
-internal/kernel/     # THE core: single scheduler loop, state machine, node mgmt,
-                     # dep resolution, reconciler, config load
-internal/kernel/executor/  # work queue: next task node with deps done; task
-                           # materialization (worktree, prompt, launch via tman)
-internal/kernel/store/     # storage adapter interface + JSON backend (OCC);
-                           # future: sqlite backend
-internal/tman/       # TerminalManager interface + tmux backend
-internal/harness/    # harness adapters + PATH auto-detect
-internal/llm/        # LLM adapter (caller-default, config override)
-internal/gitx/       # git helpers: toplevel, slug, worktree add/remove
-skills/itx/SKILL.md            # go:embed → itx skill install
+internal/cli/              # command wiring
+internal/kernel/           # reducer, single scheduler, reconciliation, node/config mgmt
+internal/kernel/executor/  # asynchronous action execution
+internal/kernel/store/     # JSON OCC, durability, history outbox
+internal/tman/             # interface + tmux backend
+internal/harness/          # adapters, detection, worker supervision
+internal/llm/              # direct calls, outside scheduling
+internal/gitx/             # worktrees, pinned inputs, PR/merge reconciliation
+skills/itx/SKILL.md         # go:embed
 skills/itx-release/SKILL.md
 install.sh
 .github/workflows/{ci,release}.yml
-archived/skills/     # former GitHub-workflow skills (reference only)
+archived/skills/           # former GitHub-workflow skills
 ```
 
-## Design decisions
+## Distribution and scope
 
-| Decision | Choice | Why |
-|---|---|---|
-| Core data structure | single DAG: root → projects → sessions → tasks (+ dependency edges) | scheduling is a pure function of the graph — deterministic scaling as work grows |
-| Storage | one file per installation (`dag.json`), optimistic locking, behind a storage adapter | predictable concurrent writes; human-readable v1; sqlite swap without kernel changes |
-| State model | shared 6-state machine (waiting/running/paused/blocked/done/failed) for sessions and tasks | one transition diagram to reason about; failed vs blocked separates terminal from recoverable |
-| CLI language | Go, static binary | curl-install from GH Releases; real JSON; clean Windows path later |
-| Core shape | single kernel with ONE scheduler loop (executor/node mgmt/storage adapter are functions it calls) | one writer, one loop, one source of truth |
-| Terminal access | tman interface, tmux backend v1 | swap in wezterm/terminator/native without touching kernel |
-| Parallelism | 1 terminal session / itx session; 1 window / task | watchable, killable, survives terminal close |
-| Scheduler loop home | window 0 of the terminal session | no daemon plumbing; user-visible; deterministic Go loop |
-| Isolation | mandatory git worktree + branch per task, under `~/.config/itx/projects/…/sessions/…/worktrees/` — auto-created, auto-removed on session done (branches kept); non-git dirs fail fast | no exceptions to reason about; parallel edits can't collide; workspace tracked in the node (`is_worktree`), never inferred |
-| Status truth | tasks report via CLI + kernel reconciles | robust to children forgetting; dead window → failed |
-| Running means running | `running` committed only after terminal session / window is verified live; every execute step idempotent | halfway failures leave clean state; re-execute always safe |
-| Caller identity | `caller_pid` recorded on create/start of sessions and tasks | traceable whether driven by harness, agent, or raw CLI |
-| Updates | one `itx update` — binary + installed skills together, no-op when current | versions never drift; no separate skill update to forget |
-| Concurrency | unlimited default, `max_parallel` opt-in | user asked for max parallelism by default |
-| LLM calls | separate LLM adapter, defaults to caller's provider | keeps kernel deterministic; direct calls isolated and overridable |
-| Skill distribution | embedded in binary, `itx skill install` | skill version always matches binary |
-| Releases | atx model: push v-X.Y → CI tags YY.MM.PP + binaries | proven pipeline; installer reads GH Releases |
-| Windows | stubs + interfaces only | requirement: structure for it, don't build it |
+Go static binary, no cgo. Installer dispatches linux/darwin × amd64/arm64, checks
+tmux (prints brew/apt/dnf instructions if absent), verifies GitHub Release checksums,
+installs to `~/.local/bin`, and offers init/skill install. Windows prints planned
+support; terminal/harness abstractions allow a later implementation.
+
+`itx update` refreshes binary and installed embedded skills together, no-op when
+current. Release pipeline: push `v-X.Y`, test, cross-compile, tag `YY.MM.PP`, publish
+four binaries and checksums. Execution preflights git, tmux, supported harness, and
+authenticated `gh` for PR operations. The local-only v1 defers cross-host execution,
+port/database/container isolation, SQLite, and a standalone agent wrapping the skill.

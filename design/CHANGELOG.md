@@ -142,3 +142,50 @@ Replaced the text flow with Mermaid diagrams for execution/user recovery,
 cancellation propagation, and uncertain-worker reconciliation in STATE_MODEL.md.
 Publish the accumulated design documentation to the existing design-itx-v2 branch
 for user review.
+
+## 2026-09-18 — Consolidate existing design files and state transitions
+
+### User prompt (verbatim)
+
+```text
+cancleled needs to be part of state trnasition. and state can go from blocked to successful as wel. user can say this is done. dont call this kubernes-aligned state dude. its just state transision. alos why're you cretaing new files whne old ones already existi for arch etc. yu've just created dupllated. fucking updat the same files. i can go back when i want
+```
+
+### Changes
+
+- Consolidated the architecture and one combined state-transition diagram into
+  [arch.md](arch.md#state-transitions). Cancelled is part of that diagram, reachable
+  from every unfinished state through task/session cancellation.
+- Added Blocked → Succeeded for explicit user completion with the existing
+  DoD/commit/branch/PR evidence and confirmed worker shutdown. Kept Failed → Ready
+  after user repair and Running → Failed visible in the same diagram.
+- Named the contract simply **State transitions**, with no external taxonomy framing.
+- Updated [DOMAIN.md](DOMAIN.md), [req.md](req.md), [execution.md](execution.md), and
+  [uat.md](uat.md) in place to match the current design rather than leaving baseline
+  content behind superseding-document banners.
+- Removed duplicate PLAN.md and STATE_MODEL.md. Historical entries above retain
+  their original artifact references and prompts; those removed documents can be
+  inspected at commit `d8fa15e`. The current architecture is arch.md.
+- Unresolved failure/merge policies remain explicitly marked for review. This is a
+  documentation revision, not implementation or acceptance sign-off.
+
+## 2026-09-18 — Remove the catch-all state
+
+### User prompt (verbatim)
+
+```text
+there cannot be any unknown state. this is a recipe for disaster and becomes a kitchnn sink for anything that doenst have a home. remove it
+```
+
+### Changes
+
+- Removed Unknown from the current state definitions, Mermaid diagram, requirements,
+  execution plan, and verification scenarios. Historical entries above remain unchanged.
+- The seven states are Pending, Ready, Running, Blocked, Succeeded, Failed, Cancelled.
+- Missing evidence retains the last confirmed state during bounded reconciliation
+  of a specific action. Record last evidence, error, and deadline separately.
+- Deadline expiry uses Failed with a concrete acknowledgement/observation timeout
+  reason, fencing execution and requesting stop. Preserve ownership/capacity until
+  exit or non-launch is confirmed; neither timeout nor late receipts authorize retry.
+  User-input waiting itself does not expire. Deadline defaults remain to be defined
+  before implementation.

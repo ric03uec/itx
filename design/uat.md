@@ -1,75 +1,95 @@
 # ITX — Acceptance & Verification (UAT)
 
-> Baseline only: these scenarios predate [PLAN.md](PLAN.md) and are not acceptance
-> criteria for the revised architecture. Updating the matrix is the next review step.
+Verification targets for [arch.md](arch.md) and [req.md](req.md), not a claim that
+these behaviors are implemented or tested. Run product scenarios on Linux amd64
+and macOS arm64. Use public CLI/skill/tmux surfaces; concurrency and crash checks
+also use controlled integration-test hooks. Settle marked architecture policy
+decisions before finalizing the corresponding tests.
 
-Final acceptance scenarios for the whole product. Run on both Linux (amd64) and macOS
-(arm64) unless noted. All scenarios use only public surfaces: `install.sh`, the `itx`
-CLI, the skill, tmux.
+## A. Installation and distribution
 
-## A. Installation & init
+| # | Scenario | Pass criteria |
+|---|---|---|
+| A1 | Fresh install with tmux | Checksum-verified binary installed at `~/.local/bin/itx`; version works; init/skill install offered. |
+| A2 | Missing tmux / unsupported OS | Platform-correct brew/apt/dnf guidance; missing tmux exits non-zero; Windows planned-support message, no partial install. |
+| A3 | Corrupt release binary | Checksum mismatch aborts installation. |
+| A4 | Init twice / commands before init | One root and no duplicate initialization; clear prerequisite error before init. |
+| A5 | Skill install all | Installed harnesses receive embedded skill; absent harnesses reported without fatal error. |
+| A6 | Update | Current version no-op; new release refreshes binary and installed skills; incompatible schema requires quiesced migration. |
+| A7 | Release pipeline | `v-X.Y` produces tested `YY.MM.PP` release, four binaries/checksums; README installer retrieves that release. |
+| A8 | Release skill | Release notes/archive follow repository release workflow and published assets match version. |
 
-| # | Scenario | Steps | Pass criteria |
-|---|----------|-------|---------------|
-| A1 | Fresh install, tmux present | `curl …/install.sh \| bash` on a clean machine with tmux | Binary at `~/.local/bin/itx`; `itx version` prints version; installer offers init + skill install |
-| A2 | tmux missing | Hide tmux from PATH, run installer | Exits non-zero; prints platform-correct install command (brew/apt/dnf); nothing installed |
-| A3 | Unsupported OS | Run installer under simulated Windows (`OSTYPE` override) | Clear "Windows support planned" message; clean exit; no partial install |
-| A4 | Checksum tamper | Corrupt downloaded binary before verify (test hook) | Install aborts loudly; no binary placed on PATH |
-| A5 | Init | `itx init`; run again | dag.json created with root node; second run is a no-op; commands before init fail with a clear "run itx init" error |
-| A6 | Skill install | `itx skill install all` with claude + opencode present, pi absent | Skill lands in both harness dirs; pi reported not-found, exit 0 |
-| A7 | Update | `itx update` right after fresh install; again after a newer release exists | First run: "already up to date", nothing changes; second run: binary + all installed skills refreshed in one step |
+## B. DAG and state transitions
 
-## B. DAG lifecycle (CLI only)
+| # | Scenario | Pass criteria |
+|---|---|---|
+| B1 | Session create, task add, bulk import | IDs returned, hierarchy/dependencies and caller provenance recorded; invalid edges/cycles reject atomically. |
+| B2 | Pending → Ready → Running | Prerequisites gate Ready; only scheduler dispatch and worker acknowledgement permit Running. Window existence alone does not. |
+| B3 | Agent needs input | Running → Blocked with request; accepted response → Ready; scheduler dispatch → Running; no autonomous bypass. |
+| B4 | User completes blocked work | Blocked → Succeeded after explicit user declaration, verified DoD/commit/branch/PR, and worker shutdown; missing evidence or active worker rejects success. Audit records manual resolution. |
+| B5 | Failure and user repair | Running → Failed, stays Failed without user action; fixed reasons + explicit re-arm + satisfied prerequisites + prior exit → Ready; new attempt retains old failure. |
+| B6 | User resolves failed work | Failed → Succeeded only with the same completion evidence and no active worker; never invent successful attempt history. |
+| B7 | Session cancellation | Cancel a session containing Pending, Ready, Running, Blocked, Failed, and Succeeded tasks: all unfinished children become Cancelled atomically, Succeeded preserved, admission revoked, physical stops reconciled. |
+| B8 | Cancellation race | Late startup/success/failure receipts cannot undo Cancelled. Confirm stopped before replacement or cleanup; terminal children retain history. |
+| B9 | Terminal and invalid writes | Succeeded/Cancelled cannot return to execution; arbitrary JSON/status writes cannot bypass actor/evidence checks. |
+| B10 | Dependency versus input wait | Unsatisfied dependencies stay Pending, capacity waits stay Ready; neither becomes Blocked. Failed prerequisite cannot silently re-arm itself. |
+| B11 | Parent aggregation and completion | Blocked child does not block an independent runnable sibling; no-progress input wait surfaces at session. Session manual success requires validated required child/session outputs and no active work. |
+| B12 | Query and naming | Show includes reasons/requests/artifacts/stopping and succeeded/total progress; project status includes Failed recovery; duplicate/renamed slugs do not collide or alter IDs/resources. |
 
-| # | Scenario | Steps | Pass criteria |
-|---|----------|-------|---------------|
-| B1 | Create + inspect | `itx session new --goal "…"` (id printed first); then `itx task add` ×3 against that id (t02,t03 depend on t01); `itx session show` | dag.json holds root→project→session→task child edges + dependency edges; caller pid recorded on session and tasks; show renders tasks in dependency order with statuses/DoD + % completion |
-| B2 | Bulk import | `itx session new --from plan.json` (goal + tasks + deps in one file) | Same result as B1; invalid deps/cycles rejected with clear error, no nodes created |
-| B3 | Status updates | `itx task update … --status running` then `done`; `itx session update … --status done` | Timestamps set; illegal transitions (e.g. `done` → `running`) rejected; `itx project status` no longer lists the session |
-| B4 | Resume index | Create 2 sessions, mark 1 `done` | `itx project status` (DAG query) lists exactly the non-terminal one |
-| B5 | Concurrent writes | 2 parallel loops of `itx task update` on different tasks | dag.json valid JSON throughout; no lost updates — conflicting commits rejected by revision check and retried |
-| B6 | Failure cascade | Mark t01 `failed` | t02, t03 → `blocked`; session → `blocked` |
+## C. Global scheduling and worker recovery
 
-## C. Orchestrated execution
+Use a fake harness with real wrapper receipts; artifact-validation fakes may isolate
+worker tests. Use real Git/PR evidence for section D and end-to-end skill tests.
 
-Fake harness (script that sleeps, then `itx task update --status done`) unless
-stated; real harness in C7.
+| # | Scenario | Pass criteria |
+|---|---|---|
+| C1 | Concurrent execute across sessions | Exactly one lifetime-lock owner and one global loop; sessions register separately; no per-session scheduler. |
+| C2 | Slow side effect | Slow preparation/git call does not prevent another session's cancellation or scheduler reconciliation. |
+| C3 | Global capacity | Reservations plus executing work obey max_parallel across sessions; blocked resumes require fresh admission; 0 allows all eligible work. |
+| C4 | Launch crash boundaries | Crash after intent, worktree, window, process launch, or acknowledgement: restart reconciles same action/attempt, never creates duplicate workers. |
+| C5 | Scheduler death | Existing workers survive where possible; replacement owner adopts identified attempts from DAG/receipts/resources without losing controls. |
+| C6 | Shell outlives harness | Exit receipt determines outcome despite live window; missing evidence retains last confirmed state during bounded reconciliation, with specific action/error/deadline visible. Expired deadline becomes Failed with concrete timeout reason, never inferred success. |
+| C7 | Fast finish / startup failure | Fast finish records acknowledged Running then validated outcome; definitive preparation/start failure becomes Failed without invented execution. |
+| C8 | Missing worker evidence | Reconcile executing/parked/completed worker using recorded action/attempt. Acknowledgement or observation timeout → Failed, fenced stop requested, ownership/capacity retained until exit or non-launch confirmed; late receipts do not silently recover Failed. User-input wait alone never times out. No extra lifecycle state or blind replacement. |
+| C9 | Suspension and explicit re-arm | Session stops do not kill global loop; Pending/Ready admission removed, interrupted worker becomes Failed/Suspended after exit; explicit re-arm preserves individual stops and success history. |
+| C10 | First failure | Verify the reviewed session-failure policy, retaining failed attempt/history and never manufacturing Blocked input requests for dependency waits. Other sessions progress. |
+| C11 | Harness/environment/preparation | Task → execute → session → config → detection precedence; safe argv/prompt quoting; explicit environment despite stale tmux env; idempotent preparation logs/exit. |
+| C12 | Missing prerequisites | Non-git dir, missing harness, or unavailable GitHub auth fail preflight before dispatch; diagnostics name missing prerequisite. |
 
-| # | Scenario | Steps | Pass criteria |
-|---|----------|-------|---------------|
-| C1 | Dependency-ordered parallel run | B1 session; `itx session execute <id>` | tmux session `{project}-{session-slug}` exists; window 0 = scheduler loop (the only loop) printing % completion each tick; session-status=running set only after window 0 is live; only t01 spawns first (task-status=running only after its window is live); t02+t03 spawn in parallel after t01 → `done` (windows named `{session-slug}-{order}-{task-slug}`); session → `done`; worktrees removed, branches kept; `itx project status` empties |
-| C2 | Worktree isolation | During C1, inspect worktrees | Each task ran in `~/.config/itx/projects/{slug}/sessions/{session-id}/worktrees/{task-slug}` on branch `itx/{session-slug}/{task-slug}`; task node carries workspace record (`dir`, `is_worktree: true`, `branch`); main tree untouched |
-| C3 | Reconciler: dead window | Kill t01's window mid-run | t01 → `failed`; t02,t03 → `blocked`; session → `blocked`; scheduler loop reports and stands down |
-| C4 | Pause + resume | `itx session stop` mid-run; then `execute` again | Stop kills all windows, session + in-flight tasks → `paused`; re-execute reuses tmux/worktrees, spawns only non-terminal tasks, completes |
-| C5 | Concurrency cap | `max_parallel: 1`; session with 2 independent tasks | Second window appears only after first → `done` |
-| C6 | Harness selection | No config → auto-detect; then `--harness opencode`; then config `default_harness: pi`; then hide all three from PATH | Precedence flag > config > auto-detect observable in spawned command lines; with none of claude/opencode/pi found, `execute` fails fast with a clear error |
-| C7 | Real harness | 2-task session with real `claude` | Children call `itx task update` per contract; session → `done`; results on task branches |
-| C8 | Non-git project | Run `execute` in a non-git dir | Fails fast with a clear error (worktrees are mandatory, no exceptions); no terminal session created, no state mutated |
-| C9 | Crash recovery | Kill the scheduler-loop window mid-run; re-`execute` | Kernel recovers from dag.json alone; idempotent re-execute creates no duplicate windows/worktrees; run completes |
-| C10 | Interrupted execute | Kill `execute` between terminal-session creation and the `running` commit (test hook) | Session never shows `running` while nothing runs; re-`execute` completes cleanly |
+## D. Workspaces, stacked results, and cleanup
 
-## D. Skill-driven flow (per harness)
+| # | Scenario | Pass criteria |
+|---|---|---|
+| D1 | Session and task isolation | Separate session worktree/branch pins main SHA and holds plans/session files; every task has another worktree; main checkout unchanged. |
+| D2 | A → B stacked PR | A pins main, B pins A output SHA; B initially targets A; parent records merge order and retargets as ancestors integrate; B receives actual upstream code. |
+| D3 | Fan-in A+B → C | Reviewed integration policy supplies both prerequisite outputs at a recorded commit; C never starts against an arbitrary dependency head. |
+| D4 | Integration conflicts / authorization | Conflicts requiring input surface Blocked; expected head/base checked; merge order does not substitute for permission; final main merge user-controlled. |
+| D5 | Ambiguous PR operation | Crash after remote create/merge but before local acknowledgement reconciles existing result rather than blindly duplicating mutation. |
+| D6 | Completion | Every successful task has DoD/commit/branch/PR evidence and stopped worker; session has required integrated outputs and final PR to main. |
+| D7 | Success without approval | Worktrees retained after Succeeded; completion never implies cleanup authorization. |
+| D8 | Approved cleanup guards | Task approval or covering session approval bound to revision; changed output invalidates approval; active workers, consumers, unpushed or dirty/untracked work prevent removal. |
+| D9 | Cleanup retry | Partial cleanup safely reconciled; branches/history retained; Succeeded not rewritten because removal failed. |
 
-Run once per harness: Claude Code, opencode, pi (pi best-effort in v1).
+## E. Storage and audit durability
 
-| # | Scenario | Steps | Pass criteria |
-|---|----------|-------|---------------|
-| D1 | Plan via skill | Invoke `/itx` with a 3-task goal | Agent interviews for DoD + deps; creates session/tasks via CLI only (no direct DAG-file edits); shows plan before executing |
-| D2 | Execute + monitor | Confirm; agent runs `itx session execute`, then polls `itx session show` | Agent reports session progress as % completion from CLI output; user can `tmux attach` independently |
-| D3 | Blocker surfacing | Force a task failure | Agent surfaces failed/blocked state and options, doesn't silently retry forever |
+| # | Scenario | Pass criteria |
+|---|---|---|
+| E1 | Multi-process writers | Many concurrent CLI/scheduler writers produce no corrupt JSON or lost updates; revision conflicts use bounded backoff/jitter and explicit exhaustion. |
+| E2 | Snapshot crash points | Stable lock, temp fsync, rename, directory fsync recover a valid committed snapshot at documented durability boundaries. |
+| E3 | No side effects in retries | Forced repeated conflicts never relaunch a worker or duplicate a Git/PR effect. |
+| E4 | History outbox crash points | Crash before append/after append/before acknowledgement: committed events eventually delivered, deduplicated by ID, ordered consistently per project. |
+| E5 | Torn JSONL tail / schema mismatch | Tail repaired under lock without discarding valid records; incompatible writers rejected; audit never overrides authoritative DAG state. |
 
-## E. Release pipeline
+## F. Skill-driven flow and sign-off
 
-| # | Scenario | Steps | Pass criteria |
-|---|----------|-------|---------------|
-| E1 | Cut release | Push to `v-X.Y` | CI: tests pass → tag `YY.MM.PP` → GH Release with 4 binaries + checksums.txt |
-| E2 | Installer ↔ release | Run README one-liner after E1 | Installs exactly the E1 binaries; checksums verify |
-| E3 | Release skill | `/itx-release` in this repo | CHANGELOG archived to `docs/releases/<ver>/`; root reset to `[Unreleased]`; curated notes on the GH Release |
+| # | Scenario | Pass criteria |
+|---|---|---|
+| F1 | Plan and execute | Agent interviews DoD/dependencies, uses CLI only, confirms plan, executes, reports progress. Run Claude Code/opencode; pi best-effort in v1. |
+| F2 | User input / manual completion | Agent surfaces Blocked request and can submit response or user's explicit evidenced completion; does not force every blocked task to rerun. |
+| F3 | Failure / cancellation / approval | No silent failure retries; cancellation reports pending physical stops; approval is requested before eligible cleanup. |
+| F4 | Newcomer flow | README alone supports install → skill-driven two-task session → evidenced completion; target under 15 minutes with prerequisites ready. |
 
-## Sign-off
-
-Product accepted when:
-1. All A–E scenarios pass on Linux amd64 and macOS arm64.
-2. `make test && make lint` green on main; CI enforces both on PRs.
-3. A newcomer, using only README, goes from zero → installed → skill-driven 2-task
-   parallel session → completed, in under 15 minutes.
+Sign-off requires applicable A–F checks on Linux/macOS, `make test && make lint`
+passing with CI enforcement, and current README/AGENTS/design contracts matching
+shipped behavior. Record actual results during implementation; policy-dependent
+checks remain pending until their architecture decisions are settled.

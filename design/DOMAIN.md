@@ -1,106 +1,99 @@
 # ITX — Domain Terminology
 
-> Revision in progress: the proposed state and ownership contracts in
-> [PLAN.md](PLAN.md) supersede conflicting baseline definitions below for planning.
+Shared vocabulary for docs, CLI, and code. State transitions and guards are defined
+in [arch.md](arch.md#state-transitions).
 
-Single source of truth for terms. All docs, CLI surfaces, code identifiers, and file
-names use these terms exactly.
-
-## The DAG (core data structure)
-
-The entire system state is one **DAG** (directed acyclic graph), stored in a single
-file per installation. Everything else — insertion, management, execution — is a
-layer operating on this structure.
+## DAG and execution records
 
 | Term | Definition |
 |---|---|
-| **Root** | The single system node. Created when itx is installed and initialized (`itx init`). Parent of all projects. |
-| **Node** | An element of the DAG: `root`, `project`, `session`, or `task`. Every node has an id, type, timestamps; project/session/task nodes carry a goal and (session/task) a status. |
-| **Edge** | A directed link between nodes. Two kinds: **child** edges (root→project→session→task hierarchy) and **dependency** edges (task→task ordering within a session). |
-| **Project** | Child of the root. A working directory (usually a git repo) where itx operates, identified by a **project slug**. |
-| **Session** | Child of a project. An **objective** — an outcome the user wants to achieve. Correlates 1:1 with a harness session at execution time, and 1:1 with a terminal session named `{project-name}-{session-slug}`. |
-| **Task** | Child of a session. A **sub-objective** required to complete the session; carries a definition of done and dependency edges to sibling tasks. Correlates with the subtasks the harness works through. Executes in its own terminal window named `{session-slug}-{task-order}-{task-slug}`. |
-| **Goal** | The objective text on a node: for a session, the user-provided outcome; for a task, the sub-objective plus its Definition of Done. |
-| **Definition of Done (DoD)** | Per-task acceptance statement. A task may only transition to `done` when its DoD is met. |
-| **Manifest** | Logical view, not a file: a session node plus its task subtree (what `itx session show` renders). |
-| **Workspace** | Per-task working-directory record stored **on the task node** (`dir`, `is_worktree`, `branch`) — never inferred from disk. Always a git worktree, no exceptions: auto-created when the task is scheduled, auto-removed when the session reaches `done` (branch kept). |
-| **Caller PID** | Process id of whatever invoked the CLI to create or start a session/task (harness, agent, or user shell). Recorded on the node. |
+| **Root** | Single installation/system node, created idempotently by `itx init`. |
+| **Node** | Root, project, session, or task with immutable ID/type/timestamps. Sessions/tasks carry status. |
+| **Edge** | Child hierarchy (root → project → session → task) or dependency between sibling tasks. |
+| **Project** | Repository registered under root, identified by immutable ID; slug is a display label. |
+| **Session** | User objective under a project; logical orchestrator of tasks, worktree, PR stack, and merge order. Registers with the global scheduler. |
+| **Task** | Sub-objective with DoD/dependencies; executes in its own worktree and worker window. |
+| **Attempt** | One execution of a task with immutable identity, launch configuration, receipts, and retained outcome. Failure repair creates another attempt. |
+| **Action intent** | Durable record authorizing a specific launch, resume, git/PR operation, stop, or cleanup before its side effects. |
+| **Goal** | User-desired session outcome or task sub-objective. |
+| **Definition of Done (DoD)** | Acceptance statement plus durable commit SHA, branch, and PR evidence required for Succeeded, including manual completion. |
+| **Manifest** | Logical session/task subtree rendered by `session show`, not a separate state file. |
+| **Workspace** | Stored path/worktree/branch/input-SHA record for a session or task; removal requires approved output and cleanup guards. |
+| **Approval** | Explicit user acceptance of a particular output revision; separate from completion and merge. |
+| **Caller PID** | Process provenance on create/start; not sufficient for worker identity or liveness. |
+| **Control generation** | Fencing value that prevents stale attempt reports from overriding newer user controls. |
 
-## State machine
+## States
 
-Sessions and tasks share the same state transition diagram:
+Display names are capitalized; persisted/CLI values are lowercase.
 
 | State | Meaning |
 |---|---|
-| `waiting` | Created; not yet running (dependencies unmet or not yet scheduled). |
-| `running` | Actively being executed. |
-| `paused` | Halted by the user (`itx session stop`); resumable. |
-| `blocked` | Cannot proceed — upstream failure or needs intervention. |
-| `done` | Objective met (task: DoD satisfied). **Terminal.** |
-| `failed` | Died or gave up (e.g. dead window while running). **Terminal.** Cascades `blocked` to dependents. |
+| **Pending** | Waiting for prerequisites or execution permission; cannot be dispatched. |
+| **Ready** | Eligible for scheduler pickup, including waiting for capacity. |
+| **Running** | Worker/orchestration startup or resumption acknowledged. |
+| **Blocked** | Required user input prevents progress; not an ordinary dependency wait. |
+| **Succeeded** | DoD and durable commit/branch/PR validated; no active work. Terminal. |
+| **Failed** | Definitive failure; user can fix reasons and re-arm into Ready or explicitly complete with evidence. No automatic retry. |
+| **Cancelled** | User abandoned task/session; no future dispatch, shutdown reconciled separately. Terminal. |
 
-`done` and `failed` are the only terminal states.
+Blocked can move to Ready after input or directly to Succeeded when the user declares
+completion and evidence validates. Failed can move to Ready after repair or to
+Succeeded through explicit evidenced completion. Succeeded and Cancelled are the
+terminal logical-task states; individual attempts retain terminal history.
 
-## Storage
+**Active/Suspended** is the separate permission control for user pause/re-arm.
+**Stopping** describes pending physical shutdown, not an additional lifecycle state.
+Missing evidence is tracked against a specific action and bounded reconciliation
+deadline, retaining the last confirmed state. Deadline expiry becomes Failed with
+an explicit timeout reason; it does not prove worker exit or permit duplicate dispatch.
 
-| Term | Definition |
-|---|---|
-| **DAG file** | `~/.config/itx/dag.json` — the single per-installation file holding the entire DAG (all projects, sessions, tasks, edges). |
-| **Optimistic locking** | Every commit carries the revision it was read at; the store rejects the write (`conflict`) if the revision moved, and the writer re-reads and retries. Makes concurrent writes predictable. |
-| **Storage adapter** | The narrow interface the kernel uses to load/commit the DAG. v1 backend: single JSON file. Swappable to sqlite (or other) with minimal effort. |
-
-## Layers
-
-| Term | Definition |
-|---|---|
-| **Insertion layer** | Everything that adds nodes to the DAG: `itx init` (root), project registration, `itx session new`, `itx task add`, bulk import — driven by the CLI directly or by the skill. |
-| **Management layer** | The **kernel**: state transitions, dependency resolution, queries (`session show`, `project status`), reconciliation, optimistic-locking commits. Sole writer of the DAG. |
-| **Execution layer** | Materializes `running` nodes into real work: the kernel's **executor** (work queue — picks the next task node whose dependencies are `done`), harness adapter, LLM adapter, and tman. |
-
-## Components
+## Layers and components
 
 | Term | Definition |
 |---|---|
-| **Kernel** | The system core: management layer + execution ownership. Scheduler loop, executor, storage adapter, project/session/task/config management. Deterministic. Touches terminals only through tman, harnesses only through the harness adapter. |
-| **Scheduler loop** | THE single main loop of the system (window 0). Each tick it walks sessions, tasks, and window liveness in one pass: reconciles, schedules, commits. There is no other loop. |
-| **Executor** | Kernel subcomponent **called by the scheduler loop each tick — not a loop itself**. Decides which task node runs next (work queue), then materializes each scheduled task — worktree + branch, launch command via the harness adapter — and runs it through the tman interface. |
-| **Terminal Manager (tman)** | Abstraction over terminal multiplexers/emulators. Small interface: create terminal session, add terminal window, send command, check liveness, kill. v1 backend: tmux. Future: wezterm, terminator, native OS terminals. |
-| **Harness Adapter** | Builds the interactive agent-harness launch command from a command template + generated task prompt. Fixed v1 list: claude, opencode, pi. Selection precedence: task override → session → `--harness` flag → config `default_harness` → PATH auto-detect; none of the three found ⇒ fail fast. |
-| **LLM Adapter** | Direct (non-interactive) LLM calls the system needs (e.g. slug generation, summaries, failure triage). Defaults to the caller's harness provider/credentials; overridable in config. |
+| **Insertion layer** | CLI/skill operations adding validated nodes and edges. |
+| **Management layer** | Kernel reducer, queries, dependency resolution, reconciliation, and transactions. |
+| **Execution layer** | Executor, wrapper, harness adapter, git/PR adapter, and tman materializing Ready work. |
+| **Kernel** | Owns state semantics and execution policy. CLI writers and scheduler share the same transactional validation. |
+| **Scheduler** | Exactly one installation-wide loop in a dedicated control tmux session, protected by lifetime lock. Sessions register with it. |
+| **Executor** | Asynchronous action execution dispatched by the scheduler; no separate scheduling loop. |
+| **Worker wrapper** | Reports startup, input requests, exit/outcome, and stop acknowledgements for an identified attempt. |
+| **Terminal manager (tman)** | Terminal resource interface; tmux in v1, other backends later. Window existence is not agent liveness. |
+| **Harness adapter** | Builds claude/opencode/pi commands. Precedence: task override → execute flag → session → config → PATH detection. |
+| **LLM adapter** | Optional direct calls outside scheduling; caller-provider default, config override. |
+| **Storage adapter** | Load/commit-at-revision interface; versioned JSON in v1, SQLite later. |
+| **Optimistic locking** | Revision conflict detection plus bounded reload/reapply/backoff; no external side effects inside retries. |
+| **History outbox** | Audit events committed with DAG changes before durable delivery to per-project append-only JSONL. |
 
-## Terminal terms (tman vocabulary)
+## Resource identity and naming
 
-| tman term | tmux equivalent | Notes |
-|---|---|---|
-| **Terminal session** | tmux session (`tmux new-session`, i.e. what `<prefix>:new` creates) | One per itx session. Name: `{project-name}-{session-slug}`. |
-| **Terminal window** | tmux window (`tmux new-window`, i.e. what `<prefix>c` creates) | One per task. Name: `{session-slug}-{task-order}-{task-slug}`. Window 0 is the scheduler loop. |
+Names include immutable IDs; slugs only improve display. Renaming a goal/slug cannot
+change worker, branch, or workspace identity.
 
-Other backends map these to their native concepts (e.g. wezterm: window/tab).
+| Resource | Pattern |
+|---|---|
+| Project/session/task/attempt IDs | Unique stable IDs, e.g. `p-…`, `s-…`, `t-…`, `a-…` |
+| Work terminal session | `itx-{project-id}-{session-id}` |
+| Task window | `{task-id}-{attempt-id}` |
+| Global scheduler terminal | Dedicated installation control session, not a work-session window |
+| Session branch | `itx/{session-id}` |
+| Task branch | `itx/{session-id}/{task-id}` |
+| Session worktree | `~/.config/itx/projects/{project-id}/sessions/{session-id}/worktree` |
+| Task worktree | `~/.config/itx/projects/{project-id}/sessions/{session-id}/worktrees/{task-id}` |
+| Snapshot/config | `~/.config/itx/dag.json`, `config.yml` |
+| Project history | `~/.config/itx/projects/{project-id}/history.jsonl` |
 
-## Naming conventions
-
-| Thing | Pattern | Example |
-|---|---|---|
-| Project slug | sanitized repo/dir basename | `itx` |
-| Session id | `s-<date>-<rand>` | `s-20260917-a1b2` |
-| Session slug | short human slug from session goal | `auth-refactor` |
-| Task id | `t-<rand>` | `t-c3d4` |
-| Terminal session | `{project-name}-{session-slug}` | `itx-auth-refactor` |
-| Terminal window (task) | `{session-slug}-{task-order}-{task-slug}` | `auth-refactor-01-add-store` |
-| Worktree dir | `~/.config/itx/projects/{project}/sessions/{session-id}/worktrees/{task-slug}` | `…/projects/itx/sessions/s-20260917-a1b2/worktrees/add-store` |
-| Task branch | `itx/{session-slug}/{task-slug}` | `itx/auth-refactor/add-store` |
-| DAG file | `~/.config/itx/dag.json` | |
-| Config | `~/.config/itx/config.yml` | |
+Honor `XDG_CONFIG_HOME` for the configured ITX directory. Work terminals have one
+worker window per current task attempt; the scheduler has a separate terminal.
 
 ## Deprecated terms
 
 | Don't say | Say instead |
 |---|---|
-| todo / todo list / todo.json | task / manifest (logical view) / DAG |
-| manifest.json, work.json (as files) | dag.json — sessions/tasks are DAG nodes; "active work" is a DAG query |
-| pending / inprogress / complete | waiting / running / done |
+| todo.json / manifest.json as state files | DAG; manifest is a logical query |
+| waiting / done as lifecycle values | pending / succeeded |
+| blocked for ordinary dependency wait | pending with dependency reason |
 | panel | terminal window |
-| tmux wrapper | terminal manager (tman) |
-| store (as a standalone component) | storage adapter (inside the kernel) |
-| orchestrator loop / kernel loop / executor loop | scheduler loop (there is only one loop) |
-| itx skill update / itx config get,set | itx update / edit config.yml directly |
+| executor loop / per-session scheduler | global scheduler; executor action |
+| itx skill update / itx config get,set | itx update / edit config.yml |

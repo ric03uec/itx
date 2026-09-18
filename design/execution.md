@@ -1,5 +1,8 @@
 # ITX — Execution Plan
 
+> Superseded planning order: see [PLAN.md §8](PLAN.md#8-implementation-order).
+> The detailed steps below are the earlier baseline, pending revised-plan review.
+
 Each step lists its UAT (how a human verifies it) and exit criteria (what must be true
 to move on). Steps are sequential; a step's exit criteria gate the next.
 

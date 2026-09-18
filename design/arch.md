@@ -1,5 +1,10 @@
 # ITX — Architecture & Design
 
+> Revision in progress: [PLAN.md](PLAN.md) contains the updated architecture plan
+> based on user feedback and supersedes conflicting choices below for planning.
+> This document is the original baseline pending that plan's review.
+> Prompt provenance: [CHANGELOG.md](CHANGELOG.md).
+
 Terminology: see [DOMAIN.md](DOMAIN.md). Requirements: see [req.md](req.md).
 
 ## The core idea

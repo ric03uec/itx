@@ -1,5 +1,8 @@
 # ITX — Domain Terminology
 
+> Revision in progress: the proposed state and ownership contracts in
+> [PLAN.md](PLAN.md) supersede conflicting baseline definitions below for planning.
+
 Single source of truth for terms. All docs, CLI surfaces, code identifiers, and file
 names use these terms exactly.
 

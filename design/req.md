@@ -1,5 +1,8 @@
 # ITX — Requirements
 
+> Revision in progress: [PLAN.md](PLAN.md) records the updated scope and architecture
+> decisions. Conflicting requirements below are the earlier baseline pending review.
+
 ## Product statement
 
 ITX is a parallel task orchestrator. The entire system state is a single **DAG**

@@ -1,5 +1,8 @@
 # ITX — Acceptance & Verification (UAT)
 
+> Baseline only: these scenarios predate [PLAN.md](PLAN.md) and are not acceptance
+> criteria for the revised architecture. Updating the matrix is the next review step.
+
 Final acceptance scenarios for the whole product. Run on both Linux (amd64) and macOS
 (arm64) unless noted. All scenarios use only public surfaces: `install.sh`, the `itx`
 CLI, the skill, tmux.
